@@ -116,7 +116,7 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
           message: "File not found"
         };
         await addLogEvent(W, run_log, "phil_cv_eventlog", war, note, null);
-        return;
+        continue;
       }
 
       // CREATE READLINE INTERFACE TO PROCESS A FILE LINE-BY-LINE: PREVENTS LOADING FILE ENTIRELY INTO MEMORY
