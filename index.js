@@ -1,23 +1,24 @@
 ("use strict");
-require("dotenv").config();
-const pgp = require("pg-promise")();
-const pgPool = require("./utils/db/pg-pool");
-const philips_parser = require("./jobs/Philips");
-const update_file_datetimes = require("./jobs/aux_jobs/update_file_datetimes");
-const delete_old_db_files = require("./jobs/aux_jobs/clear_old_db_files");
-const reset_daily_system_totals = require("./jobs/aux_jobs/reset_daily_system_reset_totals");
-const queries = require("./data_acquisition/on_boot_queries");
+
+import pgp from "pg";
+import { v4 as uuidv4 } from "uuid";
+import queries from "./data_acquisition/on_boot_queries";
+import philips_parser from "./jobs/Philips";
+import delete_old_db_files from "./jobs/aux_jobs/clear_old_db_files";
+import reset_daily_system_totals from "./jobs/aux_jobs/reset_daily_system_reset_totals";
+import update_file_datetimes from "./jobs/aux_jobs/update_file_datetimes";
+import { any } from "./utils/db/pg-pool";
+import enums from "./utils/logger/enums";
+import log from "./utils/logger/log";
+
 const [
-  addLogEvent,
-  writeLogEvents,
-  dbInsertLogEvents,
-  makeAppRunLog
-] = require("./utils/logger/log");
+    addLogEvent, writeLogEvents, dbInsertLogEvents, makeAppRunLog
+] = log;
 const {
-  type: { I, W, E },
-  tag: { cal, det, cat, seq, qaf }
-} = require("./utils/logger/enums");
-const { v4: uuidv4 } = require("uuid");
+    type: { I, E }, tag: { cal, cat }
+} = enums;
+
+dotenv.config();
 
 // Only Philips is supported now
 const determineManufacturer = async (job_id, system, run_log) => {
@@ -67,7 +68,7 @@ const onBoot = async () => {
     }
 
     let queryString = queries[shell_value];
-    const system_array = await pgPool.any(queryString);
+    const system_array = await any(queryString);
 
     // FOR DEV TESTING TO REACH DEV DATA ACQU FILES
     if (process.env.DEV_ENV === "dev") {
