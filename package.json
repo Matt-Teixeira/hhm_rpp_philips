@@ -4,7 +4,26 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js",
+    "file_dt": "node index.js file_dt",
+    "philips_ct": "node index.js PHILIPS_CT",
+    "philips_cv": "node index.js PHILIPS_CV",
+    "philips_mri_monitor_1": "node index.js PHILIPS_MRI_MONITOR_1",
+    "philips_mri_monitor_2": "node index.js PHILIPS_MRI_MONITOR_2",
+    "philips_mri_monitor_3": "node index.js PHILIPS_MRI_MONITOR_3",
+    "philips_mri_monitor_4": "node index.js PHILIPS_MRI_MONITOR_4",
+    "philips_mri_monitor_5": "node index.js PHILIPS_MRI_MONITOR_5",
+    "philips_mri_rmmu_1": "node index.js PHILIPS_MRI_RMMU_1",
+    "philips_mri_rmmu_2": "node index.js PHILIPS_MRI_RMMU_2",
+    "philips_mri_rmmu_3": "node index.js PHILIPS_MRI_RMMU_3",
+    "philips_mri_rmmu_4": "node index.js PHILIPS_MRI_RMMU_4",
+    "philips_mri_rmmu_5": "node index.js PHILIPS_MRI_RMMU_5",
+    "philips_mri_log_1": "node --max-old-space-size=4096 index.js PHILIPS_MRI_LOG_1",
+    "philips_mri_log_2": "node --max-old-space-size=4096 index.js PHILIPS_MRI_LOG_2",
+    "philips_mri_log_3": "node --max-old-space-size=4096 index.js PHILIPS_MRI_LOG_3",
+    "philips_mri_log_4": "node --max-old-space-size=4096 index.js PHILIPS_MRI_LOG_4",
+    "philips_mri_log_5": "node --max-old-space-size=4096 index.js PHILIPS_MRI_LOG_5",
+    "delete_old_db_files": "node index.js delete_old_files"
   },
   "keywords": [],
   "author": "",
@@ -16,5 +35,9 @@
     "pm2": "^6.0.6",
     "redis": "^5.1.0",
     "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.3",
+    "typescript": "^5.8.3"
   }
 }
