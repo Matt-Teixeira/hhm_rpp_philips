@@ -2,7 +2,7 @@
 const db = require("../../../utils/db/pg-pool");
 const pgp = require("pg-promise")();
 const {
-  pg_column_sets: pg_cs
+  pg_column_sets: pg_cs,
 } = require("../../../utils/db/sql/pg-helpers_hhm");
 
 // Node utils
@@ -19,7 +19,7 @@ const {
   getCurrentFileSize,
   getRedisFileSize,
   updateRedisFileSize,
-  push_file_dt_queue
+  push_file_dt_queue,
 } = require("../../../redis/redisHelpers");
 const generateDateTime = require("../../../processing/date_processing/generateDateTimes");
 const { gzip_n_save } = require("../../../util");
@@ -29,7 +29,7 @@ const { dt_now } = require("../../../util/dates");
 const [addLogEvent] = require("../../../utils/logger/log");
 const {
   type: { I, W, E },
-  tag: { cal, det, cat }
+  tag: { cal, det, cat },
 } = require("../../../utils/logger/enums");
 
 async function phil_cv_lod_eventlog(
@@ -38,6 +38,7 @@ async function phil_cv_lod_eventlog(
   file_config,
   run_log
 ) {
+  const data_acqu_path = process.env.DATA_STORE_DEV;
   const capture_datetime = dt_now();
   const sme = sysConfigData.id;
   const parsers = file_config.parsers;
@@ -50,13 +51,16 @@ async function phil_cv_lod_eventlog(
   // Extract 'Power-On hours' and 'Commercial Version' data from log file
   const memo_data = [];
 
-  const complete_file_path = `${sysConfigData.debian_server_path}/${file_config.file_name}`;
+  const complete_file_path = `${data_acqu_path}/${sme}/${file_config.file_name}`;
+
+  console.log("\ncomplete_file_path");
+  console.log(complete_file_path);
 
   let note = {
     job_id,
     sme,
     file: file_config.file_name,
-    path: complete_file_path
+    path: complete_file_path,
   };
 
   try {
@@ -68,7 +72,7 @@ async function phil_cv_lod_eventlog(
         sme,
         file: file_config.file_name,
         path: complete_file_path,
-        message: "File not found"
+        message: "File not found",
       };
       await addLogEvent(W, run_log, "phil_cv_lod_eventlog", det, note, null);
       return;
@@ -82,7 +86,7 @@ async function phil_cv_lod_eventlog(
       system_id: sme,
       file_name: file_config.file_name,
       last_mod,
-      source: "hhm"
+      source: "hhm",
     };
 
     const prevFileSize = await getRedisFileSize(
@@ -95,7 +99,7 @@ async function phil_cv_lod_eventlog(
     const currentFileSize = await getCurrentFileSize(
       sme,
       fileSizePath,
-      sysConfigData.debian_server_path,
+      `${data_acqu_path}/${sme}`,
       file_config.file_name,
       run_log
     );
@@ -113,11 +117,11 @@ async function phil_cv_lod_eventlog(
         sme,
         file: file_config.file_name,
         delta: delta,
-        message: "Same file size. Do not parse"
+        message: "Same file size. Do not parse",
       };
       await addLogEvent(I, run_log, "phil_cv_lod_eventlog", det, note, null);
       //await update_file_mod_dt(file_metadata);
-      await push_file_dt_queue(run_log, file_metadata);
+      // await push_file_dt_queue(run_log, file_metadata);
       return;
     }
 
@@ -141,7 +145,7 @@ async function phil_cv_lod_eventlog(
     if (prevFileSize === null || prevFileSize === 0 || delta !== 0) {
       rl = readline.createInterface({
         input: fs.createReadStream(complete_file_path),
-        crlfDelay: Infinity
+        crlfDelay: Infinity,
       });
     }
 
@@ -180,7 +184,7 @@ async function phil_cv_lod_eventlog(
             sme: sme,
             file: file_config,
             line,
-            message: "NO MATCH FOUND"
+            message: "NO MATCH FOUND",
           };
           await addLogEvent(
             W,
@@ -209,7 +213,7 @@ async function phil_cv_lod_eventlog(
             sme: sme,
             line,
             match_group: matches.groups,
-            message: "datetime object null"
+            message: "datetime object null",
           };
           await addLogEvent(
             W,
@@ -231,7 +235,7 @@ async function phil_cv_lod_eventlog(
           memo_data.push({
             system_id: matches.groups.system_id,
             memo: matches.groups.memo,
-            host_datetime: matches.groups.host_datetime
+            host_datetime: matches.groups.host_datetime,
           });
         }
       }
@@ -240,9 +244,10 @@ async function phil_cv_lod_eventlog(
     // homogenize data to prep for insert to db
     const mappedData = mapDataToSchema(data, philips_cv_eventlog_schema);
 
-    // console.log("\nmappedData - philips_cv");
-    // console.log(sme);
-    // console.log(mappedData[mappedData.length - 1]);
+    console.log("\nmappedData - philips_ct EAL - eal");
+    console.log(`${sme} Length: ${mappedData.length}`);
+    console.log(mappedData[0]);
+    console.log(mappedData[mappedData.length - 1]);
 
     // ** End Parse
 

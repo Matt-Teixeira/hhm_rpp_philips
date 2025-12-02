@@ -8,7 +8,7 @@ const { philips_cv_eventlog_schema } = require("../../../persist/pg-schemas");
 const { blankLineTest } = require("../../../util/regExHelpers");
 const {
   get_last_parsed_daily,
-  update_last_parsed_daily
+  update_last_parsed_daily,
 } = require("../../../redis/redisHelpers");
 const exec_read_dir = require("../../../read/exec-dir_list");
 const generateDateTime = require("../../../processing/date_processing/generateDateTimes");
@@ -19,14 +19,15 @@ const { gzip_n_save } = require("../../../util");
 const [addLogEvent] = require("../../../utils/logger/log");
 const {
   type: { I, W, E },
-  tag: { cal, det, cat, war }
+  tag: { cal, det, cat, war },
 } = require("../../../utils/logger/enums");
 
 const {
-  pg_column_sets: pg_cs
+  pg_column_sets: pg_cs,
 } = require("../../../utils/db/sql/pg-helpers_hhm");
 
 async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
+  const data_acqu_path = process.env.DATA_STORE_DEV;
   const capture_datetime = dt_now();
   const sme = sysConfigData.id;
   // an array in each config accossiated with a file
@@ -37,7 +38,7 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
   // READ DIRECTORIES IN FILE
 
   const dir_list = await exec_read_dir(read_directories_path, [
-    sysConfigData.debian_server_path
+    `${data_acqu_path}/${sme}`,
   ]);
 
   //Get Last daily_dir that was parsed!
@@ -46,9 +47,10 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
 
   const unfiltered_dirs_arr = dir_list.split(" ");
 
+  const filtered_dirs_arr = [];
   const daily_re = /daily_\d{4}_\d{2}_\d{2}|daily_\d{4}\d{2}\d{2}/;
 
-  const filtered_dirs_arr = [];
+  // PULL ALL DAILY DIR (daily_2025_12_02)
   for (let dir of unfiltered_dirs_arr) {
     const matching_file = daily_re.test(dir);
     if (matching_file) {
@@ -61,7 +63,7 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
   if (!filtered_dirs_arr.length) {
     let note = {
       id: sme,
-      message: "THERE ARE NO DAILY DIRECTORIES ON DEBIAN FOR THIS SYSTEM"
+      message: "THERE ARE NO DAILY DIRECTORIES ON DEBIAN FOR THIS SYSTEM",
     };
     await addLogEvent(I, run_log, "phil_cv_eventlog", war, note, null);
     return null;
@@ -94,13 +96,13 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
     // isLast: SET TO true IF LAST ITER OF ARRAY OF DIRECTORIES
     let isLast = index === files_to_parse.length - 1;
 
-    const complete_file_path = `${sysConfigData.debian_server_path}/${file}/${file_config.file_name}`;
+    const complete_file_path = `${data_acqu_path}/${sme}/${file}/${file_config.file_name}`;
 
     let note = {
       job_id,
       id: sme,
       dir: file,
-      path: complete_file_path
+      path: complete_file_path,
     };
 
     try {
@@ -113,7 +115,7 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
           id: sme,
           file: file_config.file_name,
           path: complete_file_path,
-          message: "File not found"
+          message: "File not found",
         };
         await addLogEvent(W, run_log, "phil_cv_eventlog", war, note, null);
         continue;
@@ -123,7 +125,7 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
       let rl;
       rl = readline.createInterface({
         input: fs.createReadStream(complete_file_path),
-        crlfDelay: Infinity
+        crlfDelay: Infinity,
       });
 
       for await (const line of rl) {
@@ -138,7 +140,7 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
               id: sme,
               file: file_config,
               line,
-              message: "NO MATCH FOUND"
+              message: "NO MATCH FOUND",
             };
             await addLogEvent(W, run_log, "phil_cv_eventlog", det, note, null);
           }
@@ -161,7 +163,7 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
               id: sme,
               line,
               match_group: matches.groups,
-              message: "datetime object null"
+              message: "datetime object null",
             };
             await addLogEvent(W, run_log, "phil_cv_eventlog", det, note, null);
           }
@@ -174,7 +176,7 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
             memo_data.push({
               system_id: matches.groups.system_id,
               memo: matches.groups.memo,
-              host_datetime: matches.groups.host_datetime
+              host_datetime: matches.groups.host_datetime,
             });
           }
         }
@@ -182,6 +184,13 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
 
       // HOMOGENIZE DATA TO PREP FOR INSERT TO DB
       const mappedData = mapDataToSchema(data, philips_cv_eventlog_schema);
+
+      
+      console.log("\nmappedData - philips_cv - eventlog");
+      console.log(`${sme} Length: ${mappedData.length}`);
+      console.log(mappedData[0]);
+      console.log(mappedData[mappedData.length - 1]);
+      
 
       // ** End Parse
 

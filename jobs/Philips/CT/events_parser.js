@@ -45,7 +45,7 @@ async function phil_ct_events(System, capture_datetime) {
     };
 
     if (System.delta === 0) {
-      await System.push_file_dt_queue(System.run_log, file_metadata);
+      // await System.push_file_dt_queue(System.run_log, file_metadata);
       return;
     }
 
@@ -128,9 +128,12 @@ async function phil_ct_events(System, capture_datetime) {
 
     const mappedData = mapDataToSchema(data, philips_ct_eal_events_schema);
 
-    console.log("\nmappedData - philips_ct - events");
-    console.log(System.sme);
+    /*
+    console.log("\nmappedData - philips_ct EVENTS - events");
+    console.log(`${System.sme} Length: ${mappedData.length}`);
+    console.log(mappedData[0]);
     console.log(mappedData[mappedData.length - 1]);
+    */
 
     // ** End Parse
 
@@ -161,7 +164,7 @@ async function phil_ct_events(System, capture_datetime) {
 
     // Update Redis Cache
 
-    await System.push_file_dt_queue(System.run_log, file_metadata);
+    // await System.push_file_dt_queue(System.run_log, file_metadata);
 
     await System.updateRedisFileSize();
   } catch (error) {

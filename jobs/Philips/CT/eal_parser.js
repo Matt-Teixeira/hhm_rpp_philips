@@ -3,12 +3,12 @@ const pgp = require("pg-promise")();
 const mapDataToSchema = require("../../../persist/map-data-to-schema");
 const {
   philips_ct_eal_schema,
-  philips_ct_eal_events_schema
+  philips_ct_eal_events_schema,
 } = require("../../../persist/pg-schemas");
 const generateDateTime = require("../../../processing/date_processing/generateDateTimes");
 const { remove_dub_quotes } = require("../../../util/regExHelpers");
 const {
-  pg_column_sets: pg_cs
+  pg_column_sets: pg_cs,
 } = require("../../../utils/db/sql/pg-helpers_hhm");
 const { build_upsert_str } = require("../../../util");
 
@@ -18,7 +18,7 @@ async function phil_ct_eal(System, capture_datetime) {
   let note = {
     job_id: System.job_id,
     sme: System.sme,
-    file: System.file_config.file_name
+    file: System.file_config.file_name,
   };
 
   try {
@@ -44,11 +44,11 @@ async function phil_ct_eal(System, capture_datetime) {
       system_id: System.sme,
       file_name: System.file_config.file_name,
       last_mod,
-      source: "hhm"
+      source: "hhm",
     };
 
     if (System.delta === 0) {
-      await System.push_file_dt_queue(System.run_log, file_metadata);
+      // await System.push_file_dt_queue(System.run_log, file_metadata);
       return;
     }
 
@@ -81,7 +81,7 @@ async function phil_ct_eal(System, capture_datetime) {
         job_id: System.job_id,
         sme: System.sme,
         file: System.file_config.file_name,
-        message: "NO MATCH FOUND"
+        message: "NO MATCH FOUND",
       };
 
       await System.addLogEvent(
@@ -111,7 +111,7 @@ async function phil_ct_eal(System, capture_datetime) {
           job_id: System.job_id,
           sme: System.sme,
           match_group: matches.groups,
-          message: "datetime object null"
+          message: "datetime object null",
         };
         await System.addLogEvent(
           System.W,
@@ -139,10 +139,12 @@ async function phil_ct_eal(System, capture_datetime) {
 
     const mappedData = mapDataToSchema(data, philips_ct_eal_events_schema);
 
-    console.log("\nmappedData - philips_ct - eal");
-    console.log(System.sme);
-    console.log(mappedData);
-    return;
+    /*
+    console.log("\nmappedData - philips_ct EAL - eal");
+    console.log(`${System.sme} Length: ${mappedData.length}`);
+    console.log(mappedData[0]);
+    console.log(mappedData[mappedData.length - 1]);
+    */
 
     // ** End Parse
 
@@ -172,7 +174,7 @@ async function phil_ct_eal(System, capture_datetime) {
     );
 
     // Update Redis Cache
-    await System.push_file_dt_queue(System.run_log, file_metadata);
+    // await System.push_file_dt_queue(System.run_log, file_metadata);
 
     await System.updateRedisFileSize();
 

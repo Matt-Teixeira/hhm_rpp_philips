@@ -15,6 +15,7 @@ class Philips_CT extends System {
   fileSizePath = "./read/sh/readFileSize.sh";
   tailPath = "./read/sh/tail.sh";
   lastModPath = "./read/sh/get_file_last_mod.sh";
+  data_acqu_path = process.env.DATA_STORE_DEV;
 
   prev_file_size;
   current_file_size;
@@ -23,7 +24,7 @@ class Philips_CT extends System {
 
   constructor(sysConfigData, file_config, job_id, run_log) {
     super(sysConfigData, file_config, job_id, run_log);
-    this.complete_file_path = `${sysConfigData.debian_server_path}/${file_config.file_name}`;
+    this.complete_file_path = `${this.data_acqu_path}/${sysConfigData.id}/${file_config.file_name}`;
   }
 
   async getRedisFileSize() {
@@ -65,10 +66,12 @@ class Philips_CT extends System {
       file: this.file_config.file_name
     };
     try {
+      let acqu_path = `${this.data_acqu_path}/${this.sme}`;
+
       this.current_file_size = await getCurrentFileSize(
         this.sme,
         this.fileSizePath,
-        this.sysConfigData.debian_server_path,
+        acqu_path, //this.sysConfigData.debian_server_path,
         this.file_config.file_name,
         this.run_log
       );
@@ -149,7 +152,7 @@ class Philips_CT extends System {
       await updateRedisFileSize(
         this.sme,
         this.updateSizePath,
-        this.sysConfigData.debian_server_path,
+        `${this.data_acqu_path}/${this.sme}`,
         this.file_config.file_name,
         this.run_log
       );
