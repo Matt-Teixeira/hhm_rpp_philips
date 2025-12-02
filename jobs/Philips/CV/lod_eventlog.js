@@ -149,29 +149,6 @@ async function phil_cv_lod_eventlog(
       });
     }
 
-    /*     Old condition prior to node data acquisition app
-    if (prevFileSize > 0 && prevFileSize !== null) {
-      const currentFileSize = await getCurrentFileSize(
-        sme,
-        fileSizePath,
-        sysConfigData.hhm_config.file_path,
-        file_config.file_name
-    );
-
-      const delta = currentFileSize - prevFileSize;
-      
-
-      if (delta === 0) {
-        
-        return;
-      }
-
-      let headDelta = await execHead(headPath, delta, complete_file_path);
-
-      rl = headDelta.toString().split(/(?:\r\n|\r|\n)/g);
-    } 
-    */
-
     for await (const line of rl) {
       let matches = line.match(philips_re.cv[parsers[0]]);
       if (matches === null) {
@@ -277,7 +254,7 @@ async function phil_cv_lod_eventlog(
     await updateRedisFileSize(
       sme,
       updateSizePath,
-      sysConfigData.debian_server_path,
+      `${data_acqu_path}/${sme}`,
       file_config.file_name,
       run_log
     );

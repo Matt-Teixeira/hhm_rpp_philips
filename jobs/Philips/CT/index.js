@@ -47,7 +47,9 @@ const philips_ct_parsers = async (job_id, sysConfigData, run_log) => {
 
       // SAVE LOG
 
-      let path = `${sysConfigData.debian_server_path}/${file.file_name}`;
+      const data_acqu_path = process.env.DATA_STORE_DEV;
+      let path = `${data_acqu_path}/${sysConfigData.id}/${file.file_name}`;
+
 
       await gzip_n_save(
         job_id,
