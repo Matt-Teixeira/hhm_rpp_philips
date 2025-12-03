@@ -13,10 +13,11 @@ const util = require("node:util");
 const exec = util.promisify(require("node:child_process").exec);
 
 class PHILIPS_MRI_LOGCURRENT extends System {
+  data_acqu_path = process.env.DATA_STORE_DEV;
   constructor(sysConfigData, file_config, job_id, run_log, file_prop_name) {
     super(sysConfigData, file_config, job_id, run_log);
     this.file_config_prop_name = file_prop_name;
-    this.complete_file_path = `${sysConfigData.debian_server_path}/${file_config.file_name}`;
+    this.complete_file_path = `${this.data_acqu_path}/${sysConfigData.id}/${file_config.file_name}`;
   }
 
   updateSizePath = "./read/sh/readFileSize.sh";

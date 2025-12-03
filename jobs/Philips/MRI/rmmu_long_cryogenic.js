@@ -15,6 +15,8 @@ const { dt_now } = require("../../../util/dates");
 async function phil_mri_rmmu_long(System) {
   const capture_datetime = dt_now();
 
+  const data_acqu_path = process.env.DATA_STORE_DEV;
+
   const parsers = System.file_config.parsers;
   const data = [];
   const lastModPath = "./read/sh/get_dir_last_mod.sh";
@@ -42,7 +44,7 @@ async function phil_mri_rmmu_long(System) {
     // No files in rmmu_long dir
     if (System.files_in_dir.length === 0) {
       const file_mod_datetime = await execLastMod(lastModPath, [
-        System.sysConfigData.debian_server_path,
+        `${data_acqu_path}/${System.sme}`,
         "rmmu_long"
       ]);
 

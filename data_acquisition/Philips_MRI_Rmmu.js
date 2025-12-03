@@ -8,15 +8,18 @@ const {
 
 // sysConfigData, file_config, job_id, run_log, file_prop_name
 class PHILIPS_MRI_RMMU extends System {
+  data_acqu_path = process.env.DATA_STORE_DEV;
+
   constructor(sysConfigData, file_config, job_id, run_log, file_prop_name) {
     super(sysConfigData, file_config, job_id, run_log);
-    this.directory_path = `${sysConfigData.debian_server_path}/${file_config.dir_name}`;
+    this.directory_path = `${this.data_acqu_path}/${sysConfigData.id}/${file_config.dir_name}`;
     this.file_config_prop_name = file_prop_name;
   }
 
   files_in_dir = [];
   last_file_parsed;
   last_file_in_dir;
+  
 
   exec_archive_path = "./read/sh/move_to_archive.sh";
 

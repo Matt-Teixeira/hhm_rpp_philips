@@ -53,9 +53,6 @@ async function phil_cv_lod_eventlog(
 
   const complete_file_path = `${data_acqu_path}/${sme}/${file_config.file_name}`;
 
-  console.log("\ncomplete_file_path");
-  console.log(complete_file_path);
-
   let note = {
     job_id,
     sme,
@@ -221,10 +218,12 @@ async function phil_cv_lod_eventlog(
     // homogenize data to prep for insert to db
     const mappedData = mapDataToSchema(data, philips_cv_eventlog_schema);
 
+    /*
     console.log("\nmappedData - philips_ct EAL - eal");
     console.log(`${sme} Length: ${mappedData.length}`);
     console.log(mappedData[0]);
     console.log(mappedData[mappedData.length - 1]);
+    */
 
     // ** End Parse
 

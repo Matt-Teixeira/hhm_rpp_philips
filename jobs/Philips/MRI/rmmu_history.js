@@ -7,16 +7,18 @@ const { philips_mri_rmmu_history } = require("../../../persist/pg-schemas");
 const generateDateTime = require("../../../processing/date_processing/generateDateTimes");
 const execLastMod = require("../../../read/exec-file_last_mod");
 const {
-  seconds_past_midnight
+  seconds_past_midnight,
 } = require("../../../processing/date_processing/incoming_date_cleaning");
 const {
-  pg_column_sets: pg_cs
+  pg_column_sets: pg_cs,
 } = require("../../../utils/db/sql/pg-helpers_hhm");
 
 const { dt_now } = require("../../../util/dates");
 
 async function phil_rmmu_history(System) {
   const capture_datetime = dt_now();
+
+  const data_acqu_path = process.env.DATA_STORE_DEV;
 
   const parsers = System.file_config.parsers;
   const data = [];
@@ -26,7 +28,7 @@ async function phil_rmmu_history(System) {
   let note = {
     job_id: System.job_id,
     sme: System.sme,
-    file: System.file_config
+    file: System.file_config,
   };
 
   try {
@@ -38,6 +40,11 @@ async function phil_rmmu_history(System) {
       note,
       null
     );
+
+    console.log("\nSystem.directory_path");
+    console.log(System.directory_path);
+
+    return;
 
     // ** Start Data Acquisition **
 
@@ -52,8 +59,8 @@ async function phil_rmmu_history(System) {
 
     if (System.files_in_dir.length === 0) {
       const file_mod_datetime = await execLastMod(lastModPath, [
-        `${System.sysConfigData.debian_server_path}`,
-        "rmmu"
+        `${data_acqu_path}/${System.sme}`,
+        "rmmu",
       ]);
 
       note.message = "No new files detected";
@@ -89,7 +96,7 @@ async function phil_rmmu_history(System) {
           sme: System.sme,
           file: System.file_config,
           re: `${philips_re.mri[parsers[0]]}`,
-          message: "NO MATCH FOUND"
+          message: "NO MATCH FOUND",
         };
 
         await System.addLogEvent(
@@ -116,7 +123,7 @@ async function phil_rmmu_history(System) {
             job_id: System.job_id,
             sme: System.sme,
             file: System.file_config,
-            message: "NO MATCH FOUND"
+            message: "NO MATCH FOUND",
           };
 
           await System.addLogEvent(
@@ -151,7 +158,7 @@ async function phil_rmmu_history(System) {
             job_id: System.job_id,
             sme: System.sme,
             file: System.file_config,
-            message: "date_time object null"
+            message: "date_time object null",
           };
           await System.addLogEvent(
             System.W,

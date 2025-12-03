@@ -17,6 +17,8 @@ const { dt_now } = require("../../../util/dates");
 async function phil_mri_rmmu_magnet(System) {
   const capture_datetime = dt_now();
 
+  const data_acqu_path = process.env.DATA_STORE_DEV;
+
   const parsers = System.file_config.parsers;
   const data = [];
   lastModPath = "./read/sh/get_dir_last_mod.sh";
@@ -43,7 +45,7 @@ async function phil_mri_rmmu_magnet(System) {
 
     if (System.files_in_dir.length === 0) {
       const file_mod_datetime = await execLastMod(lastModPath, [
-        System.sysConfigData.debian_server_path,
+        `${data_acqu_path}/${System.sme}`,
         "rmmu_magnet",
       ]);
 

@@ -54,7 +54,7 @@ const onBoot = async () => {
 
     try {
         await addLogEvent(I, run_log, "onBoot", cal, note, null);
-        // console.time();
+        console.time();
 
         let shell_value = [process.argv[2]];
 
@@ -76,15 +76,6 @@ const onBoot = async () => {
 
         let queryString = queries[shell_value];
         const system_array = await pgPool.any(queryString);
-
-        // FOR DEV TESTING TO REACH DEV DATA ACQU FILES
-        if (process.env.DEV_ENV === "dev") {
-            let dv_path =
-                "/home/reiley-meeks/avante_connected/hhm_data_acquisition";
-            for (let system of system_array) {
-                system.debian_server_path = `${dv_path}/files/${system.id}`;
-            }
-        }
 
         for await (const system of system_array) {
             const job_id = uuidv4();

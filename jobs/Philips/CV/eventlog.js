@@ -185,12 +185,12 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
       // HOMOGENIZE DATA TO PREP FOR INSERT TO DB
       const mappedData = mapDataToSchema(data, philips_cv_eventlog_schema);
 
-      
+      /*
       console.log("\nmappedData - philips_cv - eventlog");
       console.log(`${sme} Length: ${mappedData.length}`);
       console.log(mappedData[0]);
       console.log(mappedData[mappedData.length - 1]);
-      
+      */
 
       // ** End Parse
 

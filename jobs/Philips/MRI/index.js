@@ -13,18 +13,19 @@ const PHILIPS_MRI_RMMU = require("../../../data_acquisition/Philips_MRI_Rmmu");
 const [addLogEvent] = require("../../../utils/logger/log");
 const {
   type: { I, W, E },
-  tag: { cal, cat, det }
+  tag: { cal, cat, det },
 } = require("../../../utils/logger/enums");
 
 const philips_mri_parsers = async (job_id, sysConfigData, run_log) => {
   let note = {
     job_id: job_id,
-    sme: sysConfigData.id
+    sme: sysConfigData.id,
   };
 
   try {
     await addLogEvent(I, run_log, "philips_mri_parsers", cal, note, null);
 
+    // START: HANDLE MONITORING DATA
     if (sysConfigData.monitoring_config) {
       await addLogEvent(
         I,
@@ -42,7 +43,9 @@ const philips_mri_parsers = async (job_id, sysConfigData, run_log) => {
       await type_1(System_Monitor, sysConfigData.monitoring_config);
       return;
     }
+    // END: HANDLE MONITORING DATA
 
+    // START: HANDLE LOG DATA
     if (sysConfigData.log_config) {
       const capture_datetime = dt_now();
       await addLogEvent(
@@ -80,9 +83,10 @@ const philips_mri_parsers = async (job_id, sysConfigData, run_log) => {
 
       return;
     }
+    // END: HANDLE LOG DATA
 
+    // START: HANDLE RMMU && STT_MAGNET DATA
     for await (const directory of sysConfigData.rmmu_config) {
-      //let dir = Object.keys(directory)[0];
       let dir = directory.dir_name;
       note.dir_name = dir;
 
@@ -94,6 +98,9 @@ const philips_mri_parsers = async (job_id, sysConfigData, run_log) => {
         note,
         null
       );
+
+      console.log("\ndir");
+      console.log(dir);
       switch (dir) {
         case "rmmu": // Needs re-config
           const Rmmu_System = new PHILIPS_MRI_RMMU(
@@ -156,6 +163,7 @@ const philips_mri_parsers = async (job_id, sysConfigData, run_log) => {
           break;
       }
     }
+    // END: HANDLE RMMU && STT_MAGNET DATA
   } catch (error) {
     console.log(error);
     await addLogEvent(E, run_log, "philips_mri_parsers", cat, note, error);

@@ -5,7 +5,7 @@ const { compare_dates } = require("../../../util/dates");
 const [addLogEvent] = require("../../../utils/logger/log");
 const {
   type: { I, W, E },
-  tag: { cal, cat, det }
+  tag: { cal, cat, det },
 } = require("../../../utils/logger/enums");
 
 async function insertDisplayData(
@@ -20,7 +20,7 @@ async function insertDisplayData(
 ) {
   let note = {
     job_id,
-    sme
+    sme,
   };
 
   try {
@@ -33,7 +33,7 @@ async function insertDisplayData(
     if (has_prev_data.length > 0) {
       let note = {
         job_id,
-        sme
+        sme,
       };
       hours_diff = await compare_dates(has_prev_data[0].host_datetime);
       note.hours_diff = hours_diff;
