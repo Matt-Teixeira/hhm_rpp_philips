@@ -22,6 +22,8 @@ const philips_mri_parsers = async (job_id, sysConfigData, run_log) => {
     sme: sysConfigData.id,
   };
 
+  const data_acqu_path = process.env.DATA_STORE_DEV;
+
   try {
     await addLogEvent(I, run_log, "philips_mri_parsers", cal, note, null);
 
@@ -70,7 +72,7 @@ const philips_mri_parsers = async (job_id, sysConfigData, run_log) => {
       );
 
       // Save logcurrent log to DB
-      const path = `${sysConfigData.debian_server_path}/${sysConfigData.log_config.file_name}`;
+      const path = `${data_acqu_path}/${sme}/${file_config.file_name}`;
 
       await gzip_n_save(
         job_id,
