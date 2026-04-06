@@ -17,9 +17,10 @@ const {
 } = require("../../../utils/logger/enums");
 
 const philips_mri_parsers = async (job_id, sysConfigData, run_log) => {
+  const sme = sysConfigData.id;
   let note = {
     job_id: job_id,
-    sme: sysConfigData.id,
+    sme,
   };
 
   const data_acqu_path = process.env.DATA_STORE_DEV;
@@ -72,7 +73,7 @@ const philips_mri_parsers = async (job_id, sysConfigData, run_log) => {
       );
 
       // Save logcurrent log to DB
-      const path = `${data_acqu_path}/${sme}/${file_config.file_name}`;
+      const path = `${data_acqu_path}/${sme}/${Logcurrent_System.file_config.file_name}`;
 
       await gzip_n_save(
         job_id,
