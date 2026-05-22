@@ -28,6 +28,7 @@ const determineManufacturer = async (job_id, system, run_log) => {
     };
     try {
         await addLogEvent(I, run_log, "determineManufacturer", cal, note, null);
+        console.log("\nOk, we are here");
         await philips_parser(job_id, system, run_log);
     } catch (error) {
         await addLogEvent(
@@ -78,6 +79,9 @@ const onBoot = async () => {
         const system_array = await pgPool.any(queryString);
 
         for await (const system of system_array) {
+      
+            system.debian_server_path = `/opt/resources/acqu_files/${system.id}`;
+  
             const job_id = uuidv4();
             await determineManufacturer(job_id, system, run_log);
         }

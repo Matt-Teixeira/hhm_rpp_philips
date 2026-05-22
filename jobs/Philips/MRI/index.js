@@ -102,8 +102,6 @@ const philips_mri_parsers = async (job_id, sysConfigData, run_log) => {
         null
       );
 
-      console.log("\ndir");
-      console.log(dir);
       switch (dir) {
         case "rmmu": // Needs re-config
           const Rmmu_System = new PHILIPS_MRI_RMMU(

@@ -19,6 +19,7 @@ const philipsModalities = async (job_id, sysConfigData, run_log) => {
 
     switch (modality) {
       case "MRI":
+        console.log("\nThis is an MRI");
         await philips_mri_parsers(job_id, sysConfigData, run_log);
         break;
       case "CT":
@@ -31,6 +32,7 @@ const philipsModalities = async (job_id, sysConfigData, run_log) => {
         break;
     }
   } catch (error) {
+    console.log(error);
     await addLogEvent(E, run_log, "philipsModalities", cat, note, error);
   }
 };
