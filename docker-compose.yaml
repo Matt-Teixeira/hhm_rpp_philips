@@ -51,17 +51,16 @@ services:
       REDIS_HOST: ${REDIS_HOST}
       REDIS_PORT: "${REDIS_PORT}"
 
-# Reuse the util-hybride-ep image built by data_acquisition (gosu entrypoint)
+# Reuse the shared image built from hhm_rpp_ge/docker/Dockerfile: baked gosu
+# entrypoint (user-drop to RUN_USER), so no host-mounted /opt/resources needed.
   app_tools:
-    image: util-hybride-ep:latest
+    image: hhm_rpp:staging
     <<: [*common_env, *common_mounts]
     volumes:
       - ./:/workspace
       - /opt/resources/node_mod_cache/hhm_rpp_philips:/workspace/node_modules
       - /opt/run-logs/hhm_rpp_philips:/opt/run-logs/hhm_rpp_philips
       - ${DATA_STORE_DEV}:${DATA_STORE_DEV}:ro
-      # Entrypoint lives here (/opt/resources/entrypoint.sh)
-      - /opt/resources:/opt/resources:ro
     environment:
       RUN_USER: ${RUN_USER}
       NPM_CONFIG_CACHE: /tmp/.npm
