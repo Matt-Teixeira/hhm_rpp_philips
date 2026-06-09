@@ -13,7 +13,6 @@ db/backup/*.tar
 deltaStore
 *.pem
 test_data/
-utils/
 
 # Generated Files
 
