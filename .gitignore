@@ -12,6 +12,7 @@ controllers/threeTableCall/testData.js
 db/backup/*.tar
 deltaStore
 *.pem
+*.crt
 test_data/
 
 # Generated Files
