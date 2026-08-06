@@ -54,7 +54,7 @@ services:
 # Reuse the shared image built from hhm_rpp_ge/docker/Dockerfile: baked gosu
 # entrypoint (user-drop to RUN_USER), so no host-mounted /opt/resources needed.
   app_tools:
-    image: hhm_rpp:staging
+    image: hhm_rpp:${IMAGE_TAG}
     <<: [*common_env, *common_mounts]
     volumes:
       - ./:/workspace
