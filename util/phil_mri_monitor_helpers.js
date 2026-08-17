@@ -5,6 +5,34 @@ const {
   tag: { cal, cat, det },
 } = require("../utils/logger/enums");
 
+// Strict allowlist of column identifiers that callers may interpolate into
+// SQL. These are the config.mag.column_name values used by
+// processing/phil_mri_monitor_data/{initialUpdate,update_secondary_table}
+// and match the data columns of mag.philips_mri_monitoring_data(_agg).
+// Any other value throws before a query is built.
+const ALLOWED_COLUMN_NAMES = new Set([
+  "cryo_comp_comm_error_state",
+  "cryo_comp_malf_value",
+  "cryo_comp_press_alarm_state",
+  "cryo_comp_temp_alarm_state",
+  "he_psi_avg_value",
+  "helium_level_value",
+  "long_term_boil_off_value",
+  "mag_dps_status_value",
+  "monitor_magnet_pressure_value",
+  "quenched_state",
+  "tech_room_humidity_value",
+  "tech_room_temp_value"
+]);
+
+function assertAllowedColumn(col_name) {
+  if (!ALLOWED_COLUMN_NAMES.has(col_name)) {
+    throw new Error(
+      `Disallowed SQL column identifier: ${JSON.stringify(col_name)}`
+    );
+  }
+}
+
 async function getSystemDbData(job_id, run_log, sme) {
   let note = {
     job_id,
@@ -42,6 +70,7 @@ async function getExistingDates(run_log, sme) {
 
 async function updateTable(run_log, col_name, arr) {
   try {
+    assertAllowedColumn(col_name);
     if (arr[0] === -Infinity) return;
     const queryStr = `UPDATE mag.philips_mri_monitoring_data SET ${col_name} = $1 WHERE system_id = $2 AND date = $3`;
     await db.none(queryStr, arr);
@@ -53,6 +82,7 @@ async function updateTable(run_log, col_name, arr) {
 
 async function updateTable_agg(run_log, col_name, arr) {
   try {
+    assertAllowedColumn(col_name);
     if (arr[0] === -Infinity) return;
     const queryStr = `UPDATE mag.philips_mri_monitoring_data_agg SET ${col_name} = $1 WHERE system_id = $2 AND date = $3`;
     await db.none(queryStr, arr);
@@ -64,6 +94,7 @@ async function updateTable_agg(run_log, col_name, arr) {
 
 async function insertData_agg(run_log, col_name, arr) {
   try {
+    assertAllowedColumn(col_name);
     if (arr[3] === -Infinity) return;
     const queryStr = `INSERT INTO mag.philips_mri_monitoring_data_agg(system_id, capture_datetime, host_datetime, date, ${col_name}) VALUES($1, $2, $3, $4, $5)`;
     await db.none(queryStr, arr);
@@ -76,6 +107,7 @@ async function insertData_agg(run_log, col_name, arr) {
 
 async function insertData(run_log, col_name, arr) {
   try {
+    assertAllowedColumn(col_name);
     if (arr[3] === -Infinity) return;
     const queryStr = `INSERT INTO mag.philips_mri_monitoring_data(system_id, host_datetime, date, ${col_name}) VALUES($1, $2, $3, $4)`;
     await db.none(queryStr, arr);
@@ -138,6 +170,7 @@ async function insert_into_secondary_table(run_log, sme, col_name, values) {
     values,
   };
   try {
+    assertAllowedColumn(col_name);
     await addLogEvent(
       I,
       run_log,
@@ -169,6 +202,7 @@ async function update_secondary_table(run_log, sme, col_name, values) {
     values,
   };
   try {
+    assertAllowedColumn(col_name);
     await addLogEvent(I, run_log, "update_secondary_table", det, note, null);
     const queryStr = `UPDATE mag.philips_mri_monitoring_data_agg SET ${col_name} = $1 WHERE system_id = $2 AND capture_datetime = $3`;
     await db.none(queryStr, values);

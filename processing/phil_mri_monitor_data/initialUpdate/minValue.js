@@ -4,6 +4,11 @@ const {
   insertData_agg
 } = require("../../../util/phil_mri_monitor_helpers");
 const { dt_from_pattern } = require("../../../util/dates");
+const [addLogEvent] = require("../../../utils/logger/log");
+const {
+  type: { I, W, E },
+  tag: { cal, cat, det }
+} = require("../../../utils/logger/enums");
 
 async function minValue(
   run_log,
@@ -80,7 +85,7 @@ async function minValue(
       ]);
     } else {
       let insert_this_dt;
-      if ((sme = "SME15816")) {
+      if (sme === "SME15816") {
         insert_this_dt = await dt_from_pattern(
           `${data[data.length - 1].host_date} ${
             data[data.length - 1].host_time

@@ -10,7 +10,7 @@ const execTail = require("../read/exec-tail");
 const execLastMod = require("../read/exec-file_last_mod");
 const execFileLineRange = require("../read/exec-line_range");
 const util = require("node:util");
-const exec = util.promisify(require("node:child_process").exec);
+const execFile = util.promisify(require("node:child_process").execFile);
 
 class PHILIPS_MRI_LOGCURRENT extends System {
   data_acqu_path = process.env.DATA_STORE_DEV;
@@ -189,9 +189,13 @@ class PHILIPS_MRI_LOGCURRENT extends System {
   }
 
   async getFileLineCount() {
-    const { stdout, stderr } = await exec(
-      `grep -c "" ${this.complete_file_path}`
-    );
+    // execFile: no shell, so the config-derived path is passed as an argv
+    // element and cannot be interpreted as shell syntax.
+    const { stdout, stderr } = await execFile("grep", [
+      "-c",
+      "",
+      this.complete_file_path,
+    ]);
 
     return parseInt(stdout.trim());
   }
