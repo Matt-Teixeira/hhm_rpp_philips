@@ -132,7 +132,10 @@ const onBoot = async () => {
             // EXITS WITH AN HONEST CODE.
             await update_file_datetimes(run_log);
         } else if (shell_value[0] === "delete_old_files") {
-            await delete_old_db_files();
+            // PASSES run_log SO THE PURGE SELF-LOGS (BATCHES, ROWS DELETED,
+            // BACKLOG REMAINING) AND SO A LOCK-BUSY RUN CAN MARK ITSELF
+            // "skipped" INSTEAD OF REPORTING A CLEAN SUCCESS IT DIDN'T EARN.
+            await delete_old_db_files(run_log);
         } else if (shell_value[0] === "reset_daily_system_totals") {
             await reset_daily_system_totals();
         } else {
