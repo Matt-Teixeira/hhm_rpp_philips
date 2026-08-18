@@ -37,6 +37,12 @@ async function phil_mri_logcurrent(file_config, System, capture_datetime) {
 
     await System.getCurrentFileSize();
 
+    // File missing (or empty): checkFileExists (inside getCurrentFileSize)
+    // already logged the WARN that ops-dashboard keys on. Skip this system's
+    // file cleanly before the fs.stat below can throw ENOENT and escalate a
+    // tolerated miss into an ERROR event (audit A2: Logcurrent cascade).
+    if (!System.current_file_size) return;
+
     const last_mod = (
       await System.getLastModifiedTime(System.complete_file_path)
     ).toISOString();

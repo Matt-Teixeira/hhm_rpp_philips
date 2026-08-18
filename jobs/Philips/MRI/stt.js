@@ -37,9 +37,18 @@ async function stt_parser(file_config, System) {
 
     await System.getCurrentFileSize();
 
+    // File missing (or empty): checkFileExists (inside getCurrentFileSize)
+    // already logged the WARN that ops-dashboard keys on. Skip this system's
+    // file cleanly instead of cascading into getFileData TypeErrors
+    // (audit A2: Logcurrent cascade).
+    if (!System.current_file_size) return;
+
     await System.getFileData();
 
-    if (System.file_data === null) return;
+    // !file_data (not just === null): if getFileData caught an error before
+    // assigning, file_data is undefined and the for-await below would throw
+    // "not async iterable". Matches logcurrent.js's existing guard.
+    if (!System.file_data) return;
 
     let line_number = 1;
     for await (const line of System.file_data) {

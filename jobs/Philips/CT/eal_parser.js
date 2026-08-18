@@ -34,6 +34,25 @@ async function phil_ct_eal(System, capture_datetime) {
     // ** Start Data Acquisition
     await System.getRedisFileSize();
     await System.getCurrentFileSize();
+
+    // Break out of function if no file found. Must run BEFORE
+    // getFileSizeDelta/getLastModifiedTime: both fs.stat the file and throw
+    // ENOENT when it is absent, escalating a tolerated miss into an ERROR
+    // event (audit A2). Logged as WARN so the miss stays visible in
+    // warn_error_logs now that the ERROR cascade is gone.
+    if (System.current_file_size === null) {
+      note.message = "File not found";
+      await System.addLogEvent(
+        System.W,
+        System.run_log,
+        "phil_ct_eal",
+        System.cal,
+        note,
+        null
+      );
+      return;
+    }
+
     System.getFileSizeDelta();
 
     const last_mod = (
@@ -49,20 +68,6 @@ async function phil_ct_eal(System, capture_datetime) {
 
     if (System.delta === 0) {
       // await System.push_file_dt_queue(System.run_log, file_metadata);
-      return;
-    }
-
-    // Break out of function if no file found
-    if (System.current_file_size === null) {
-      note.message = "File not found";
-      await System.addLogEvent(
-        System.I,
-        System.run_log,
-        "phil_ct_eal",
-        System.cal,
-        note,
-        null
-      );
       return;
     }
 

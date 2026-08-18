@@ -207,6 +207,14 @@ class PHILIPS_MRI_LOGCURRENT extends System {
       file: this.file_config.file_name,
     };
     try {
+      // File missing (or empty): checkFileExists already logged the WARN for
+      // this system/file during getCurrentFileSize. Set file_data to null so
+      // callers skip cleanly instead of tailing/streaming a path that does
+      // not exist (audit A2: Logcurrent cascade).
+      if (!this.current_file_size) {
+        this.file_data = null;
+        return;
+      }
       if (
         this.prev_file_size === null ||
         this.prev_file_size === 0 ||
