@@ -94,6 +94,52 @@ runs each — the schedule is live and healthy.
   `LOGGER_MODE`. NOT museum: `util/gzip_file.js` (`gzip_n_save`) is live —
   CT jobs write `log.saved_files` through it.
 
+## Running
+
+```bash
+bash preflight-check.sh          # expect ZERO warnings
+bash build.sh                    # deps in-tree + dev log dir + image check
+
+# Development — from the dev tree (~/apps/hhm_rpp_philips), as yourself
+RUN_USER=<you> docker compose run --rm app_tools node index.js PHILIPS_CT
+# LOG families keep their heap flag:
+RUN_USER=<you> docker compose run --rm app_tools node --max-old-space-size=4096 index.js PHILIPS_MRI_LOG_1
+
+# Production — from the release copy, RUN_USER omitted (entrypoint defaults to svc)
+cd /opt/apps/hhm_rpp_philips && docker compose run --rm app_tools node index.js PHILIPS_CT
+
+# Release
+bash build-release.sh            # refuses on a dirty tree; stamps RELEASE_SHA
+```
+
+Run logs: dev → `./utils/logger/logs/`, release → `/opt/run-logs/hhm_rpp_philips/`
+(`<app>-log.<USER_ID>.<run_id>.json`; read with `cat`, never open in an editor).
+A dev run is a REAL run — same staging DB, same Redis cursors, same source
+files as production. Running a read family off-schedule consumes that family's
+delta, so the next cron tick logs "not grown" for those systems (normal,
+self-heals on the following capture).
+
+### Dev-phase verification (2026-08-26, pre-cutover)
+
+- `preflight-check.sh`: 45 ok, **0 warnings**, 0 errors on the dev clone.
+- Dev round-trip: `delete_old_files` and `PHILIPS_MRI_MONITOR_3` as
+  matt-teixeira — logs landed in `./utils/logger/logs/` tagged
+  `.matt-teixeira.`, boot note recorded `RELEASE_SHA=dev-tree`, honest
+  `run_outcome` (`success exit=0`), rows in `util.app_run_logs`; nothing new
+  in `/opt/run-logs/hhm_rpp_philips`.
+- Clean-tree guard negative test: untracked file → refused, exit 1, release
+  dir untouched (guard sits above the wipe).
+- Tar excludes verified by `tar -tf` diff: zero tracked files dropped;
+  `package.json`/`package-lock.json` ship.
+- Kill test (`SIGTERM` mid-run, `PHILIPS_MRI_MONITOR_1`): handler flushed both
+  sinks once and exited honestly — `run_outcome failed exit=1`, DB row carries
+  `fatal.code=E_SIGNAL`, compose exit 1. **Test-harness caveat worth keeping:**
+  ge's entrypoint `exec`s gosu so node is PID 1, and PID 1 silently IGNORES a
+  signal that arrives before `process.on()` registration (module-load phase,
+  first ~0.5 s) — two early attempts "passed" the TERM into that window and the
+  runs completed untouched. A real kill test must wait for node's own output
+  before signalling.
+
 ## Environment / secrets
 
 - `.env` is gitignored; `.env.example` is the tracked record of required keys.
