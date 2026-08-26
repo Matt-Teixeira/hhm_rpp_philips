@@ -1,26 +1,15 @@
-### 1. Clone Required Repositories
-```bash
-# GE RPP APP
-git clone git@github.com:Matt-Teixeira/hhm_rpp_philips.git
-# Switch to docker branch
-git switch -c DEV_docker --track origin/DEV_docker
+# Setup
 
-# Shared utilities repo
-git clone git@github.com:AvanteHS-RTT/utils.git
-# Switch to docker branch
-git switch -c DEV_docker --track origin/DEV_docker
-```
+Superseded 2026-08-26 by the fleet paradigm — see `CLAUDE.md` (this repo) and
+`data_acquisition/docs/migration_CLAUDE.md` Part 1/Part 3.
 
-## Run a job
+The instructions that used to live here pre-dated the migration and were wrong
+in ways that would break a fresh deployment:
 
-Use the runtime image through the `app` service:
+- They cloned the retired shared `utils` repo (`AvanteHS-RTT/utils`) — `utils/`
+  has been tracked in THIS repo since commit `9cb071c`.
+- They ran jobs through the deleted root-running `app` service and `npm ci`'d
+  into the retired shared node_modules cache.
 
-```sh
-docker compose run --rm app bash -lc "npm run philips_ct"
-```
-
-RUN ON FIRST DEPLOY TO NUKE AND UPDATE node_moduels CACHE: fresh install before running the job
-
-```sh
-docker compose run --rm app bash -lc "npm ci --omit=dev && npm run philips_ct"
-```
+Bring-up on a new server: `data_acquisition/docs/migration_CLAUDE.md`
+"Bringing up a migrated app on a new server".

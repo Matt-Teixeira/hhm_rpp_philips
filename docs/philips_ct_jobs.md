@@ -2,7 +2,7 @@
 
 ## How to run
 - Local: `npm run philips_ct` (or `node index.js PHILIPS_CT`).
-- Docker image used in this repo: `docker compose run --rm app bash -lc "npm run philips_ct"`.
+- Docker (dev tree): `RUN_USER=<you> docker compose run --rm app_tools node index.js PHILIPS_CT` — see `CLAUDE.md` "Running".
 
 ## What the job targets
 - Startup entrypoint (`index.js`) loads system metadata from `data_acquisition/on_boot_queries.js` under the `PHILIPS_CT` query (Philips systems with a CT modality and `run_group = 1`). Each record supplies `id`, `time_zone_id`, `debian_server_path`, and a `log_config` array describing every log file to ingest.

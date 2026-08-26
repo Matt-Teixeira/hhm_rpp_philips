@@ -1,0 +1,105 @@
+# CLAUDE.md
+
+> **⚠️ MID-MIGRATION (started 2026-08-26).** This app is being aligned to the
+> fleet dev/release paradigm (fourth app, after data_acquisition, monday,
+> hhm_rpp_siemens + hhm_rpp_ge). Conventions:
+> `data_acquisition/docs/migration_CLAUDE.md` Part 1; migration checklist:
+> Part 3 (the only checklist — this repo carries no rival one). Until this
+> banner is removed, sections below may describe pre-migration defects as
+> current fact — each is corrected in the commit that changes it. Dev clone:
+> `~/apps/hhm_rpp_philips`; `/opt/apps/hhm_rpp_philips` is the FROZEN live
+> tree (bind-mounted into every scheduled run — no behavioral commits land
+> there) until `build-release.sh` replaces it at cutover.
+
+**hhm_rpp_philips** is a Node.js parser: it incrementally reads Philips
+equipment log files (fetched to `/opt/resources/acqu_files/<SME>/` by
+data_acquisition every 30 min), parses new content since the last run, and
+bulk-inserts to PostgreSQL. CT/CV jobs also archive raw machine files as gzip
+blobs into `log.saved_files` (~381 kB/row), which this app itself purges on a
+48-hour retention (`delete_old_files` — see audit DB-05). Run-once by design —
+triggered on a schedule, not a long-running service.
+
+## Run arguments (job families)
+
+| argv | what it does | status |
+| --- | --- | --- |
+| `PHILIPS_CT` | CT eal/events parsing + `gzip_n_save` → `log.saved_files` | **live** — `:15/:45` |
+| `PHILIPS_CV` | CV eventlog parsing | **live** — `:15/:45` |
+| `PHILIPS_MRI_MONITOR_1`–`5` | MRI monitor deltas (Redis size cursor) | **live** — `:15/:45` |
+| `PHILIPS_MRI_RMMU_1`–`5` | MRI rmmu history/magnet/cryogenic | **live** — `:15/:45` |
+| `PHILIPS_MRI_LOG_1`–`5` | MRI logcurrent (`--max-old-space-size=4096`) | **live** — `:15/:45` |
+| `delete_old_files` | `log.saved_files` 48 h batched retention (advisory-locked) | **live** — `:05/:35` |
+| `file_dt` | update file datetimes | **dead** — no cron entry, no runs in record; stays dead (standing decision) |
+| `reset_daily_system_totals` | daily totals reset | **dead** — no cron entry, no runs in record; stays dead |
+
+The `_1`–`_5` suffixes are run groups from `data_acquisition/on_boot_queries.js`
+(each family's boot query selects its systems). Incremental mechanism: Redis
+keys per `<SME>.<file>` hold the last-read cursor (file size or line), advanced
+**after** a successful insert — overlapping runs of the same family would
+double-process, so cron entries must use `flock -n`.
+
+## Schedule (matt-teixeira's USER crontab — `crontab -l`)
+
+**Deviation from Part 1, deliberate:** this app's schedule pre-dates the
+paradigm and lives in matt-teixeira's user crontab, like hhm_rpp_ge and
+incident-engine. Standing decision: existing user-crontab schedules are
+hardened **in place**; consolidation into the shared svc crontab is the
+separate follow-up data_acquisition BACKLOG 6f, not part of this migration.
+
+Current state (pre-cutover): 19 entries in the "PHILIPS RPP (preserved
+verbatim)" block — 18 read families at `15,45 * * * *` (sleep offsets 0–50 s)
+plus `delete_old_files` at `05,35`. They are **unhardened**: relative `docker`,
+`bash -lc "npm run …"` indirection, no `flock`, no `-T` (except the delete
+entry), no `.out` capture. Hardening lands at cutover with cadences and sleep
+offsets unchanged. Baseline (7 days to 2026-08-26): all 18 families at 322–323
+runs each — the schedule is live and healthy.
+
+## KNOWN WARTS (deliberate — do not "fix" casually)
+
+- **Shared image.** Compose runs `image: hhm_rpp:${IMAGE_TAG}` — owned and
+  built by **hhm_rpp_ge** (`hhm_rpp_ge/docker/Dockerfile`); philips and siemens
+  have no Dockerfile on purpose. Do NOT retag or rebuild it from this repo.
+  Since ge's migration (2026-08-26): ge dev trees build `hhm_rpp:<username>`,
+  ge's release builds `hhm_rpp:svc`. This app runs `IMAGE_TAG=svc`. Once
+  philips is cut over, no consumer needs the legacy `staging` alias — retiring
+  it is ge-repo follow-up.
+- **No entrypoint log-dir repair.** The gosu entrypoint is baked into ge's
+  image and only drops privileges — it cannot `mkdir`/chown the log dir.
+  Substitute: `build.sh` and `preflight-check.sh` create `./utils/logger/logs`
+  host-side so Docker never creates the bind source root-owned.
+  `/opt/run-logs/hhm_rpp_philips` is pre-created `svc:docker 2775` on the host.
+- `index.js` references a `DESIGN.md` (run_outcome/v1 contract) that was never
+  committed. The contract's authority is the comments in `index.js` itself;
+  ops-dashboard and incident-engine consume the exit codes and the
+  `run_outcome` event — **never regress to exit-0-on-failure, and never
+  reshape event 0's `note.argv`** (ops-dashboard derives the job label from
+  `verbose_log->0->'note'->'argv'->>2`).
+- **Legacy Azure + VNS3 credentials kept in `.env`** (owner decision
+  2026-08-26, keep-and-document): the commented `PG_*` Azure block and the
+  `VNS3_*` lines are inert — `utils/db/pg-pool.js` prefers the `PGHOST` family
+  and nothing reads `VNS3_*`. They stay as an operator reference. Do not
+  uncomment the `PG_*` block: with `PGHOST` unset, pg-pool's fallback would
+  silently point runs at the Azure host.
+- **`:15/:45` container pileup.** CT + CV + the five MONITOR entries share
+  second 0 of the minute (7 containers at once, then rmmu/log staggered 5–50 s
+  behind). Pre-existing behavior, works, left unchanged at cutover
+  (minimal-change hardening — owner-approved 2026-08-26).
+- Museum code retained pending post-cutover cleanup (deferred by decision,
+  needs per-item sign-off): `utils/vpn/`, `utils/config-processor/`,
+  `utils/units/`, non-philips SQL under `utils/db/sql/`,
+  `utils/db/pg-pool copy.js`, `read/exec-move_to_archive.js` +
+  `read/sh/move_to_archive.sh` (only caller is commented out),
+  `TUNNEL_RESET_APP` (points at a script that does not exist), the `pm2`
+  dependency, and raw `console.log` debug dumps in job files that bypass
+  `LOGGER_MODE`. NOT museum: `util/gzip_file.js` (`gzip_n_save`) is live —
+  CT jobs write `log.saved_files` through it.
+
+## Environment / secrets
+
+- `.env` is gitignored; `.env.example` is the tracked record of required keys.
+- PG + Redis credentials come from root-only `/opt/resources/secrets/`; this
+  app **is registered** in the host rotation script
+  (`rotate-envs-20260817.sh`), which rewrites both
+  `/opt/apps/hhm_rpp_philips/.env` and `~/apps/hhm_rpp_philips/.env` when a
+  secret rotates — both copies must keep values matching the reference.
+- Pre-migration `.env` backup: `~/env-backups/hhm_rpp_philips.env.pre-migration-2026-08-26`.
