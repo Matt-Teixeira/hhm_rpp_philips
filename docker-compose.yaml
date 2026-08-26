@@ -1,68 +1,41 @@
 # no "version" key
+#
+# ONE service on purpose. The legacy `app` service (stock node:lts, root,
+# HOME=/tmp, no pg_net) and the shared node_mod_cache mount were deleted
+# 2026-08-26: deps now live in-tree (build.sh), and runs use ge's shared
+# image via app_tools — same cleanup siemens made 2026-08-25.
 
-x-common-env: &common_env
-# Load environment variables from .env in the project root
-  env_file:
-    - .env
-
-  # Allow containers to reach services on the host via this hostname
-  extra_hosts:
-    - "host.docker.internal:host-gateway"
-
-  # Runtime env vars
-  environment:
-    # Don't write into root's $HOME inside the image; use a tmp home
-    HOME: /tmp
-
-    # Keep npm's cache ephemeral (avoids permission issues on bind mounts)
-    NPM_CONFIG_CACHE: /tmp/.npm
-
-x-common-mounts: &common_mounts
-  working_dir: /workspace
-  volumes:
-  # --- Bind mounts (host paths must exist) ---
-
-    # 1) Project source → live edit on host reflects in container
-    - ./:/workspace
-    
-    # 2) Cache node_modules on host (survives container removal)
-    - /opt/resources/node_mod_cache/hhm_rpp_philips:/workspace/node_modules
-
-    # 3) Centralized run logs on host
-    - /opt/run-logs/hhm_rpp_philips:/opt/run-logs/hhm_rpp_philips
-
-    # 4) ACQ files from first app (READ ONLY)
-    - ${DATA_STORE_DEV}:${DATA_STORE_DEV}:ro
-
-# ---------- Services ----------
 services:
-  # Lightweight container for running the app as-is
-  app:
-    # Base Node image (moves with LTS). For reproducibility, consider pinning:
-    # image: node:22-bookworm (10/30/25)
-    image: node:lts
-
-    # Merge in common env + mounts
-    <<: [*common_env, *common_mounts]
-    networks:
-      - redis_net              # <-- attach to the external Redis network
-    environment:
-      # Prefer hostname over container IP
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: "${REDIS_PORT}"
-
-# Reuse the shared image built from hhm_rpp_ge/docker/Dockerfile: baked gosu
-# entrypoint (user-drop to RUN_USER), so no host-mounted /opt/resources needed.
+  # Runtime service: ge's shared image (baked gosu entrypoint dropping to
+  # RUN_USER, default svc). TAG: hhm_rpp:${IMAGE_TAG} is owned/built by
+  # hhm_rpp_ge — see CLAUDE.md "KNOWN WARTS". Never build or retag it from
+  # this repo.
   app_tools:
     image: hhm_rpp:${IMAGE_TAG}
-    <<: [*common_env, *common_mounts]
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    working_dir: /workspace
     volumes:
+      # 1) Project source → live edit on host reflects in container.
+      #    node_modules is IN-TREE (installed by build.sh as the host user),
+      #    so it rides along in this mount — no separate cache mount.
       - ./:/workspace
-      - /opt/resources/node_mod_cache/hhm_rpp_philips:/workspace/node_modules
-      - /opt/run-logs/hhm_rpp_philips:/opt/run-logs/hhm_rpp_philips
+
+      # 2) Run logs. Host destination is env-dependent; defaults to the DEV
+      #    path so a missing LOG_DIR fails safe (never writes /opt/run-logs).
+      - ${LOG_DIR:-./utils/logger/logs}:/workspace/utils/logger/logs
+
+      # 3) ACQ files (read-only). Same path on host and container because the
+      #    code builds absolute paths from DATA_STORE_DEV on both sides.
       - ${DATA_STORE_DEV}:${DATA_STORE_DEV}:ro
     environment:
-      RUN_USER: ${RUN_USER}
+      # Intentionally unset in .env: empty -> baked entrypoint defaults to svc
+      # (one place decides the production identity). Dev runs pass it on the
+      # command line. ':-' silences the compose WARN.
+      RUN_USER: ${RUN_USER:-}
+      # Keep npm's cache ephemeral (avoids permission issues on bind mounts)
       NPM_CONFIG_CACHE: /tmp/.npm
     networks:
       - redis_net
