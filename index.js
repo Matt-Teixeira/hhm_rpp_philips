@@ -109,11 +109,13 @@ const deriveOutcome = (run_log, fatal_error) => {
 const onBoot = async () => {
     const run_log = await makeAppRunLog();
 
+    // RELEASE_SHA is stamped into the deployed .env by build-release.sh; a dev
+    // tree has no key and records 'dev-tree'. A 'dev-tree' row appearing on a
+    // schedule means cron is running the wrong copy.
     let note = {
-        LOGGER: process.env.LOGGER,
-        REDIS_IP: process.env.REDIS_IP,
-        PG_USER: process.env.PG_USER,
-        PG_DB: process.env.PG_DB,
+        USER_ID: process.env.USER_ID,
+        LOGGER_MODE: process.env.LOGGER_MODE,
+        RELEASE_SHA: process.env.RELEASE_SHA || "dev-tree",
         argv: process.argv,
     };
 
