@@ -1,15 +1,14 @@
 # CLAUDE.md
 
-> **⚠️ MID-MIGRATION (started 2026-08-26).** This app is being aligned to the
-> fleet dev/release paradigm (fourth app, after data_acquisition, monday,
-> hhm_rpp_siemens + hhm_rpp_ge). Conventions:
-> `data_acquisition/docs/migration_CLAUDE.md` Part 1; migration checklist:
-> Part 3 (the only checklist — this repo carries no rival one). Until this
-> banner is removed, sections below may describe pre-migration defects as
-> current fact — each is corrected in the commit that changes it. Dev clone:
-> `~/apps/hhm_rpp_philips`; `/opt/apps/hhm_rpp_philips` is the FROZEN live
-> tree (bind-mounted into every scheduled run — no behavioral commits land
-> there) until `build-release.sh` replaces it at cutover.
+> **Migrated to the fleet dev/release paradigm 2026-08-26.** Conventions:
+> `data_acquisition/docs/migration_CLAUDE.md` Part 1. Dev clone:
+> `~/apps/hhm_rpp_philips`; `/opt/apps/hhm_rpp_philips` is build output
+> produced ONLY by `build-release.sh`. Cutover verified over a full day of
+> cron cycles (2026-08-26 13:45 → 2026-08-27 13:15 UTC, `util.app_run_logs`):
+> all 18 families at unchanged cadence (48 runs/family, delete_old_files 47),
+> every run `svc | RELEASE_SHA=534ad92`, zero `dev-tree`, zero failed;
+> outcome mix and warn band match the pre-cutover baseline (partial ratio
+> 27.8% both eras, avg warn/err per success run 10.4 both eras).
 
 **hhm_rpp_philips** is a Node.js parser: it incrementally reads Philips
 equipment log files (fetched to `/opt/resources/acqu_files/<SME>/` by
