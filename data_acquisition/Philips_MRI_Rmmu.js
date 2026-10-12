@@ -41,6 +41,25 @@ class PHILIPS_MRI_RMMU extends System {
       // Ex directory_path: Files in  /opt/hhm-files/C0137/SHIP013/SME01138/rmmu_long
       this.files_in_dir = await fsp.readdir(this.directory_path);
     } catch (error) {
+      // NO DIRECTORY = NOTHING ACQUIRED FOR THIS SYSTEM YET (OR NOT PULLED ON
+      // THIS SERVER): A WARN, AS THE MONITOR FAMILIES TREAT A MISSING SOURCE.
+      // files_in_dir STAYS [] SO THE CALLER TAKES ITS "NO NEW FILES" PATH.
+      // A COPY: THE CALL EVENT ABOVE HOLDS note BY REFERENCE.
+      if (error.code === "ENOENT") {
+        await this.addLogEvent(
+          this.W,
+          this.run_log,
+          "PHILIPS_MRI_RMMU: get_directory_files",
+          this.det,
+          {
+            ...note,
+            path: this.directory_path,
+            message: "RMMU directory not found: no files acquired",
+          },
+          null
+        );
+        return;
+      }
       await this.addLogEvent(
         this.E,
         this.run_log,
