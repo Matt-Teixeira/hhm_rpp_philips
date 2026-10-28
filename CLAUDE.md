@@ -108,8 +108,16 @@ RUN_USER=<you> docker compose run --rm app_tools node --max-old-space-size=4096 
 cd /opt/apps/hhm_rpp_philips && docker compose run --rm app_tools node index.js PHILIPS_CT
 
 # Release
-bash build-release.sh            # refuses on a dirty tree; stamps RELEASE_SHA
+bash build-release.sh            # refuses on a dirty tree; stamps RELEASE_SHA + RELEASE_AT
 ```
+
+`build-release.sh` stamps `RELEASE_SHA=<commit>` and `RELEASE_AT=<UTC time>`
+(`YYYY-MM-DDTHH:MM:SSZ`, for the orchestrator's release-drift view) into the
+**deployed** `.env` only, in one idempotent "Injected by build-release.sh"
+block — never set either by hand; a dev tree has neither (boot note logs
+`dev-tree`). `preflight-check.sh` warns, from both the dev tree and the release
+copy, when the release `.env` has `RELEASE_SHA` but no `RELEASE_AT` (released
+before the stamp existed — re-release) or a malformed one.
 
 Run logs: dev → `./utils/logger/logs/`, release → `/opt/run-logs/hhm_rpp_philips/`
 (`<app>-log.<USER_ID>.<run_id>.json`; read with `cat`, never open in an editor).
