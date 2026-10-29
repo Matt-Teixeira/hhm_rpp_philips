@@ -120,7 +120,7 @@ copy, when the release `.env` has `RELEASE_SHA` but no `RELEASE_AT` (released
 before the stamp existed — re-release) or a malformed one.
 
 Run logs: dev → `./utils/logger/logs/`, release → `/opt/run-logs/hhm_rpp_philips/`
-(`<app>-log.<USER_ID>.<run_id>.json`; read with `cat`, never open in an editor).
+(`<app>-log.<USER_ID>.<New York stamp>.json`; read with `cat`, never open in an editor).
 A dev run is a REAL run — same staging DB, same Redis cursors, same source
 files as production. Running a read family off-schedule consumes that family's
 delta, so the next cron tick logs "not grown" for those systems (normal,
