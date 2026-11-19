@@ -32,7 +32,7 @@ const philips_ct_parsers = async (job_id, sysConfigData, run_log) => {
           );
           await phil_ct_eal(Eal_System, capture_datetime);
           break;
-        case "events_1":
+        case "events":
           const Events_System = new Philips_CT(
             sysConfigData,
             file,

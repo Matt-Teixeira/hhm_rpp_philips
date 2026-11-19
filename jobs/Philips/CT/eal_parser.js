@@ -141,8 +141,7 @@ async function phil_ct_eal(System, capture_datetime) {
 
     console.log("\nmappedData - philips_ct - eal");
     console.log(System.sme);
-    console.log(mappedData);
-    return;
+    console.log(mappedData[mappedData.length - 1]);
 
     // ** End Parse
 
