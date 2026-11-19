@@ -109,9 +109,6 @@ class Philips_CT extends System {
       note
     );
 
-    console.log("\ndelta");
-    console.log(this.delta);
-
     try {
       if (this.delta === 0) {
         const last_mod_dt = await getLastModifiedTime(this.complete_file_path);

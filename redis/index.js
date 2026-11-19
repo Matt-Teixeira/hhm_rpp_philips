@@ -1,4 +1,5 @@
 const redis = require("redis");
+const { guardRedis } = require("../util/dry_run");
 
 async function initRedis() {
   // SETUP ENV BASED RESOURCES -> REDIS CLIENT, JOB SCHEDULES
@@ -15,7 +16,8 @@ async function initRedis() {
 
   await redisClient.connect();
 
-  return redisClient;
+  // DRY_RUN=1: reads pass through, writes are recorded and skipped
+  return guardRedis(redisClient);
 }
 
 module.exports = initRedis;

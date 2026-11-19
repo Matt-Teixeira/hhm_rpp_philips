@@ -13,7 +13,13 @@ db/backup/*.tar
 deltaStore
 *.pem
 test_data/
-utils/
+
+# utils/ is part of this repo; only its run logs are ignored
+utils/logger/*-log.*
+utils/logger/*/
+dry_run_output/
+# public CA root referenced by PG_SSL_PATH; not a secret
+!utils/db/BaltimoreCyberTrustRoot.crt.pem
 
 # Generated Files
 
