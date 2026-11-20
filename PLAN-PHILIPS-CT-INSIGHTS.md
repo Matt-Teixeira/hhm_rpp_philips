@@ -854,4 +854,29 @@ and waiting for the Codex review. Reachability is still down. Evidence:
    - `.output` equals the old script's output;
    - read `Data_Logger.ls`.
 5. The PCT-C exit criterion: 5 clean days.
-6. PCT-1b reads the `.csv` files.
+6. PCT-1b reads the `.csv` files. From the Codex review: parse the CSV quoting first, then run
+   **one left-to-right** unescape pass per field (`\n \r \t \\`). Repeated replace passes would turn
+   a literal backslash followed by `n` into a newline. Tests must cover literal backslashes, doubled
+   quotes, CRLF, tabs, adjacent escapes, empty text vs NULL, and non-ASCII text.
+
+**Review round 1 (2026-11-20):** Codex found F1–F4 plus one inherited P1 (R1); the review is
+`REVIEW-PCTC-COLLECTOR-CODEX.md`. All are fixed on `DEV` (uncommitted), with 26/26 jest tests
+passing, every mutation caught, and real-data equivalence rerun. The handoff is updated for
+re-review.
+
+**Review round 2 (2026-11-20):** `REVIEW-PCTC-COLLECTOR-CODEX-2.md` found 0 P1 and 3 P2, all in the
+optional listing (partial listing installed, TERM-only timeout, a throttle that didn't hold after
+failures). All are fixed. Following Codex's recommendation, the main download also has a hard
+deadline (600 s + 15 s kill). 38/38 jest tests pass, every mutation is caught, and real-data
+equivalence was rerun.
+
+**Review round 3 (2026-11-20):** `REVIEW-PCTC-COLLECTOR-CODEX-3.md` found 0 P1 and 3 P2, verdict
+"not ready":
+- a failed state-file write could kill the script;
+- a TERM-resistant descendant could outlive `timeout`;
+- a setting of 0 disabled the deadlines.
+
+All are fixed. The listing runs in a subshell with `touch`-based state; every `lftp` session's
+process group is killed when it ends; durations must be 1–86400 s. 50/50 jest tests pass, every
+mutation but one is caught (the subshell is now a second layer), and real-data equivalence was
+rerun. Ready for round 4.
