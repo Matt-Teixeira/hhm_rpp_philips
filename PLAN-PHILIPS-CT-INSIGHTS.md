@@ -19,9 +19,9 @@
   (after the 2026-11-23 21:25 UTC check). The schema and C1-Philips work
   there (§4) waits for it.
 - **Next (§6):**
-  - a separate collector session (PCT-C) in `hhm_data_acquisition`:
-    reachability first (network or site work), collector code only after
-    your go-ahead (Q2);
+  - the collector session (PCT-C), started 2026-11-20 (§8): the export
+    fix is written and tested, uncommitted, and waiting for the Codex
+    review. Reachability is still down; that is network work (§8.1);
   - the mapping (PCT-2a): **AGREED 2026-11-20** (§7.7 Q13–Q18, as
     drafted). It becomes `insight/philips_ct/rules.js` in PCT-2;
   - the parser fix (PCT-1b) is built after 2026-11-24 18:53 UTC (Q3) and
@@ -803,3 +803,55 @@ answer is marked **AGREED**; the reasoning is kept as it was.
     rows (suffixed, comma and multi-line lines included), masked as the
     rules require. Keep them in the evidence folder; commit only the
     masked fixtures.
+
+---
+
+## 8. PCT-C: collector session (started 2026-11-20)
+
+**Status:** the export fix is written and tested in `hhm_data_acquisition` on `DEV`, uncommitted,
+and waiting for the Codex review. Reachability is still down. Evidence:
+`~/philips_ct_evidence/pctc/` (README).
+
+### 8.1 Reachability (Q2 step 1): not code, needs someone with network and site access
+
+- **Still down.** All 9 collected systems time out at TCP connect on port 22, on every 15-minute
+  run, as recently as 2026-11-20 15:42 UTC (`pctc/out/02_outcomes_3d.tsv`). Other vendors' systems
+  on the same runs connect.
+- **The 9 systems:** SME18530, SME18534, SME18535, SME18976, SME18980, SME20598, SME20602,
+  SME20605, SME20611. Sites per §5 Q2: Intelas (Holmes Regional, Palm Bay, Memorial ×3) and
+  Providence Medford.
+- **Ticket text:** "Since about 2026-11-02 the Avante collector cannot open SSH (TCP 22) to the 9
+  Philips CT consoles listed above; connections time out. Please check the site VPN tunnels and
+  firewall rules for the CT host addresses on file, and whether the consoles' SSH service still
+  runs."
+- **No code depends on this.** The fix below can deploy first.
+
+### 8.2 The export fix (Q2 step 2) and the reset question (step 3)
+
+- **Script:** `read/sh/Philips/phil_ct_data_grab_1.sh`, the only script the 9 systems use.
+- **The legacy `.output` files are unchanged.** They come from the same commands, byte-identical on
+  all 5 real copies, so today's parser is unaffected.
+- **New: `EALInfo.csv` and `Events.csv`.** Complete exports, one line per row, with commas and line
+  breaks kept. They match the database exactly on all 5 copies (179,478 rows), and they are what
+  PCT-1b will read.
+- **Also new:**
+  - every file is replaced atomically, staged and then `mv`d;
+  - an export failure keeps the previous files and is reported as an error (exit 1);
+  - a lock prevents overlapping grabs;
+  - `Data_Logger.ls` lists `D:\Data_Logger\` on each grab, which answers step 3 (is the old
+    `Logger.mdb` kept at a reset?) once a system is reachable.
+- **Tests:** 10/10 jest tests (synthetic stubs) pass, and 5 mutations are each caught.
+- **Review:** `hhm_data_acquisition/REVIEW-PCTC-COLLECTOR-HANDOFF.md`. Codex writes
+  `REVIEW-PCTC-COLLECTOR-CODEX.md`.
+
+### 8.3 What's next
+
+1. The Codex review, then fixes.
+2. Your commit, then the `DEV` → `STAGING` → `PROD` promotion.
+3. Reachability, from 8.1.
+4. The first successful grab, checked:
+   - the `.csv` row counts equal the database's;
+   - `.output` equals the old script's output;
+   - read `Data_Logger.ls`.
+5. The PCT-C exit criterion: 5 clean days.
+6. PCT-1b reads the `.csv` files.
