@@ -22,7 +22,8 @@
   - a separate collector session (PCT-C) in `hhm_data_acquisition`:
     reachability first (network or site work), collector code only after
     your go-ahead (Q2);
-  - the mapping (PCT-2a) is read-only and can start any time (Q9);
+  - the mapping (PCT-2a): **AGREED 2026-11-20** (§7.7 Q13–Q18, as
+    drafted). It becomes `insight/philips_ct/rules.js` in PCT-2;
   - the parser fix (PCT-1b) is built after 2026-11-24 18:53 UTC (Q3) and
     deployed with or after PCT-C's export change (Q4);
   - the schema (PCT-1) waits for the GE MRI close-out and for PCT-C to
@@ -30,8 +31,8 @@
 
   No insight code is built until a system reports again (Q1).
 
-Companion: `PLAN-PHILIPS-CT-INSIGHTS-CODES.md` (code and template
-inventory). Evidence: `~/philips_ct_evidence/` (`README.md` maps each
+Companion: `PLAN-PHILIPS-CT-INSIGHTS-CODES.md` (codes, templates and the
+proposed mapping, PCT-2a §7). Evidence: `~/philips_ct_evidence/` (`README.md` maps each
 section below to its script and output).
 
 ---
@@ -294,18 +295,18 @@ GE CT catalog: `hhm_rpp_ge/PLAN-CT-INSIGHTS.md` §4 (metrics) and §5 / §14
 | per-shot mA·s, mA·s/day | **P** | EAL `Gen Shot<kV>x<mA>` × `GXray EXP=<ms>` / 1000. Meaning to confirm; only a sum over collected shots, not lifetime |
 | `tube.replacement`, `tube_replaced` | **N** | no serial, no counter; `Tube=` is the type |
 | `tube.identity` | **S** (type only) | `Gen Idle: … Tube=#`, `Orion Tube Type: #` |
-| `exam.start`, exams/day | **P** | Events `STUDY_STARTED` (lossy; history undercounted for good); EAL `StudyReady` (complete, meaning to confirm) |
+| `exam.start`, exams/day | **P** | Events `STUDY_STARTED` (lossy; history undercounted for good). It brackets studies exactly on complete data; EAL `StudyReady` is per series, not per study (§7.3) |
 | `exam.series`, images/exam | **P** / **N** | Events `Series # Complete` (lossy); no image counts |
 | scans / shots per day, kV and mA mix, focal spot | **S** | EAL `Gen Shot…`, `GXray EXP=` (new vs GE) |
 | busy-hour profile | **S** | shots by device-local hour |
-| `scan.abort.operator` / `.system`, `abort_rate_high` | **N** (proxy **P**) | no abort text. Proxy: `CStateShot to CStateStudyExit`, `GANTRY_SERIES_SKIP_REQ`, to confirm |
-| `scan.safe_state`, `safe_state_recurrent` | **S** as E-stop | EAL E-stop lines and the ESTOP code |
+| `scan.abort.operator` / `.system`, `abort_rate_high` | **P** after PCT-C + PCT-1b | Events `Series # cancelled, due to GANTRY_CANCEL_SOURCE_<CTBOX\|HOST\|NORMAL_ERROR>` (§7.4). Comma lines, so never ingested today |
+| `scan.safe_state`, `safe_state_recurrent` | **S** as E-stop | `HSS Off!ESTOPdetect`, `GantryEstopOpenedBkst`, ESTOP-type codes; not the start-up lines (§7.2) |
 | `error.ermes` | **S** | EAL `err_number` (123 codes) with `kdb.philips_ct` labels |
-| `system.boot`, boots/week | **P** | EAL `Ctrl Powered Up…`, `gpcStartup`, to confirm |
+| `system.boot`, boots/week | **P** | EAL `Ctrl Powered Up…`: one per gantry power-up (§7.2), to confirm |
 | `system.shutdown` | **P** | Events `CStateShutdown` (lossy), EAL `Gen ShutdownWait` |
 | `process.restart`, `process_restart_loop` | **N** | gantry log, no host processes |
 | `service.mode` | **P** | `GantryAppDiagModeAns` (diag mode), to confirm |
-| `prep.*` (warm-up, fast cal, air cal), `prep_noncompliance` | **P** / **N** | warm-up needed / not needed (lossy); no air cal |
+| `prep.*` (warm-up, fast cal, air cal), `prep_noncompliance` | **P** | warm-up needed / not needed (lossy); a morning kV × spot sweep of shots outside studies (§7.5), to confirm |
 | `service.calibration` | **N** | |
 | `inventory.product` | **S** | gantry software version; model from `public.systems` |
 | rotor (`tube.rotor_*`, `tube_rotor_instability`) | **P** | `Rotor stopped and MDC closed`, `S_ROTOR_STOP_ANODE_NO_MORE_SPINNING`, `ANODE BY PASS` |
@@ -353,7 +354,7 @@ GE CT catalog: `hhm_rpp_ge/PLAN-CT-INSIGHTS.md` §4 (metrics) and §5 / §14
 | # | Where | Defect | Size |
 |---|---|---|---|
 | **I1** | parser (`ct_events_v2`) | `host_time` must end in `\.\d{3}"`, so every Events row whose `DataTime` has a `__NN` suffix is never ingested | **14,603 of 27,824 Events rows (52%)** in the SME20598 window; 0 suffixed Events rows exist in the DB. All Events history is affected, and the files are gone, so the loss is permanent |
-| **I2** | collector | `awk -v FS=","` reorders the Events CSV, so a `Msg` containing a comma shifts the columns and the `sed` filter drops the row. `tr -cd` also deletes characters (`( ) % # * …`) from the rest | 4–7% of Events rows dropped (1,420 of 27,824 on SME20598; 1,122 of them have a comma); 5–9% of messages altered |
+| **I2** | collector | `awk -v FS=","` reorders the Events CSV, so a `Msg` containing a comma shifts the columns and the `sed` filter drops the row. A `Msg` with a line break (5% of non-relay rows, §7.4) is also lost. `tr -cd` also deletes characters (`( ) % # * …`) from the rest | 4–7% of Events rows dropped (1,420 of 27,824 on SME20598; 1,122 of them have a comma); 5–9% of messages altered |
 | **I3** | parser (`ct_events_v2`) | `Msg` is split at its first space: `message` gets the first word, `eal` the rest; the real `EAL` flag survives only when it is `Yes` | 23% of Events rows have message text in `eal`. Can be rebuilt as `message ‖ ' ' ‖ eal` |
 | **I4** | design | the reset loss (§3.3) | about 1–2% of EAL rows (estimate) |
 | **I5** | parser | the byte-offset tail assumes an append-only file. The collector rewrites a sorted full export every time; `Events.output` is sorted by its `MM/dd/yy HH:mm:ss` text, then `Type` (810 out-of-order lines in one snapshot), and that order breaks at year end. It works today only because a growing buffer exports append-like | latent; tail boundaries can split or skip a line |
@@ -568,6 +569,13 @@ answer is marked **AGREED**; the reasoning is kept as it was.
     - is a study `STUDY_STARTED` or `StudyReady`?
     - which line marks a gantry boot?
     - what do `PumpOn T#=#`, `HC# # #.# C` and `Temp fil` measure?
+    - what do the `Gen Shot` mode letters `O` / `-` / `Z` / `D` mean? (§7.1)
+    - is `HSS Off!ESTOPdetect` / `GantryEstopOpenedBkst` the E-stop
+      button, or also a normal power-off? (§7.2)
+    - what are `INVERTER FAULT CK#`, `Close Hor Timeout` and
+      `ANODE BY PASS`? (§7.6)
+    - what does the daily calibration / warm-up look like in the log?
+      (§7.5)
     - are the SME18534 heater-I2C / RCOM codes and the SME20598 FDOM /
       main-drive codes known problems?
 
@@ -578,9 +586,9 @@ answer is marked **AGREED**; the reasoning is kept as it was.
 | Phase | Content | Exit | Earliest |
 |---|---|---|---|
 | **PCT-0 Decide** | this plan; §5 answered | your answers recorded as AGREED | **done 2026-11-20** |
-| **PCT-C Collection** (separate session, `hhm_data_acquisition`) | Q2: reachability for the 9 systems; Events export without loss; atomic write; the reset question | at least 1 system grabbed on 5 consecutive clean days; on a fresh `Logger.mdb`, output rows = MDB rows for both tables; outputs written atomically; review closed | network work now; code after your go-ahead |
-| **PCT-1b Ingest integrity** (this repo) | Q4: suffix, `Msg` / flag, whole-file + key dedupe, quiet missing files; tests on the 5 snapshots | DB = MDB on every snapshot and on a live capture (keys and content, both tables); 0 duplicates across a reset; `DRY_RUN` rehearsal; Codex review; deployed by you; 5 clean days | build after 2026-11-24 18:53 UTC (Q3); deploy with or after PCT-C's export change |
-| **PCT-2a Mapping** | `PLAN-PHILIPS-CT-INSIGHTS-CODES.md` grows into the reviewed mapping (rules, ignore list, `kdb` labels) | mapping agreed | read-only; any time after Q9 |
+| **PCT-C Collection** (separate session, `hhm_data_acquisition`) | Q2: reachability for the 9 systems; Events export without loss; atomic write; the reset question | at least 1 system grabbed on 5 consecutive clean days; on a fresh `Logger.mdb`, output rows = MDB rows for both tables; outputs written atomically; comma and multi-line `Msg` lines arrive (Q17); review closed | network work now; code after your go-ahead |
+| **PCT-1b Ingest integrity** (this repo) | Q4: suffix, `Msg` / flag, whole-file + key dedupe, quiet missing files; tests on masked fixtures from the 5 snapshots (Q18) | DB = MDB on every snapshot, including suffixed, comma and multi-line Events lines (Q17) and on a live capture (keys and content, both tables); 0 duplicates across a reset; `DRY_RUN` rehearsal; Codex review; deployed by you; 5 clean days | build after 2026-11-24 18:53 UTC (Q3); deploy with or after PCT-C's export change |
+| **PCT-2a Mapping** | `PLAN-PHILIPS-CT-INSIGHTS-CODES.md` grows into the reviewed mapping (rules, ignore list, `kdb` labels) | mapping agreed (§7.7 Q13–Q18) | **done: AGREED 2026-11-20** |
 | **PCT-1 Schema** (`hhm_rpp_ge`) | C1-Philips; scanner and catalog allowlist for `api.philips_ct_*`; migration 010; the writer grant | tests; local rehearsal; Codex review; you apply | after the MRI close-out (2026-11-23), and only once PCT-C shows data |
 | **PCT-2 Extract** | `insight/philips_ct/` rules + extract + backfill (EAL from 2026-05, Q5) | dry run = independent SQL per system × metric; review closed | after PCT-1 and PCT-1b |
 | **PCT-3 Derive** | daily (wall-clock days), capabilities, shots / studies, inventory | verifiers pass; review closed | after PCT-2 |
@@ -603,3 +611,195 @@ answer is marked **AGREED**; the reasoning is kept as it was.
 - no `.env` reads;
 - no credentials, hosts or IPs in evidence or fixtures;
 - `hhm_rpp_ge` and `/home/prod/*` untouched until you say so.
+
+---
+
+## 7. PCT-2a: the mapping (2026-11-20, read-only) — AGREED 2026-11-20
+
+**Deliverable:** `PLAN-PHILIPS-CT-INSIGHTS-CODES.md`, regenerated. It replaces
+the Phase 0 inventory with the proposed mapping: v1 metrics, watch list,
+all codes, every rule, totals, the tail, and the templates above the 97%
+cut with their rule. The draft classifier is
+`~/philips_ct_evidence/pct2a/mapping.js` (44 EAL rules, 46 Events rules,
+123 codes). It becomes `insight/philips_ct/rules.js` once agreed.
+Evidence and generator: `~/philips_ct_evidence/pct2a/` (README).
+
+**Inputs:**
+- **DB:** 2026-05 → 2026-11-02, 3 systems, deduped on key plus content
+  (Q6): 6,466,092 uncoded EAL rows, 52,747 coded rows, 1,182,407 Events
+  rows, and 3,911,351 relay rows (ignored).
+- **MDB:** every row of the 5 `Logger.mdb` snapshots. This is the only
+  complete Events data, with `Msg` whole as PCT-1b will store it.
+
+**Checks:**
+- Raw text and masked template classify identically: 0 differences on
+  116,493 raw DB rows (1% sample) and 179,478 MDB rows.
+- Rules cover 99.97% of uncoded EAL rows and 99.99% of Events rows.
+- All 123 codes are reviewed, and every rule fires.
+
+### 7.1 Shots (v1: `pct.shot`, `pct.xray_ms`)
+
+- **One regex parses every shot line.** There are 59,729 deduped
+  `Gen Shot<kV>x<mA><spot><mode>*` lines.
+  - kV: 120 (66.5%), 80 (14.1%), 100 (12.1%), 140 (7.3%).
+  - Spot: L 85.5%, S 14.5%.
+  - Mode letter: `O` 85.7%, `-` 11.6%, `Z` 2.7%, `D` 2 rows. The
+    letter's meaning is a field-service question.
+- **Exposure times pair with shots.** 59,619 shots (99.8%) are followed
+  within 2 shot lines and 120 s by `GXray EXP=<ms>`, a median 0.7–3.9 s
+  later. The line is logged when the exposure ends. 74 `EXP` lines have
+  no shot.
+- **mA·s is a candidate, not v1.** mA × `EXP` / 1000 sums to 32.4 M over
+  6 months (SME20598 22.8 M, SME18534 7.5 M, SME18535 2.1 M). Whether that
+  is the tube's mA·s is a field-service question (Q12).
+- **Busy hours** come from `pct.shot` by device hour. 17.3% of all shots
+  fall in hour 07, much of it a morning calibration sweep (§7.5).
+
+### 7.2 E-stop and power-up
+
+- **Most "E-stop" lines are start-up.** `HSS-ESTOP state`,
+  `ESTOPcausedHVGfault`, `OkRhostEstopStatus` and Events
+  `GantryEstopClosedBkst` come about 1 minute before
+  `Ctrl Powered Up. Serial Connection OK.`
+  - 188 of 223 `HSS-ESTOP state` episodes fall within 10 minutes before a
+    power-up.
+  - The median gap since the last shot is 15 hours.
+  - They are the power-up sequence, not E-stop presses. They emit nothing.
+- **E-stop opened** shows up in two lines:
+  - EAL `HSS Off!ESTOPdetect`: 44 episodes on 31 system-days.
+  - Events `GantryEstopOpenedBkst… in <state>`: 56 episodes.
+
+  Both come a median 16–18 minutes after the last shot. A power-up follows
+  a median 2–7 minutes later, and no shot ever happens between an E-stop
+  and the next power-up. 30 episodes appear in both lines. Events is lossy
+  (I1), so EAL history alone undercounts.
+- **ESTOP-type codes** (19 rows, 5 codes, e.g.
+  `S_LIFESYNCMGRTASK_LIFESYNC_FAIL`) are system-initiated stops.
+- **Proposal: `pct.estop` is the union of all three**, merged into
+  10-minute episodes in derive.
+  - Dims: `loop_open`, `opened:<state>`, `system:<code>`.
+  - History before PCT-1b uses EAL and codes only, labelled a lower bound.
+- **Power-up:** `Ctrl Powered Up…` has 220 rows (207 episodes, 160
+  system-days). 202 of the 207 `GantryEstopClosedBkst` episodes fall
+  within 10 minutes before one. It goes on the watch list as `pct.power_up`; until then
+  it counts as `pct.event` (dim `powered_up`).
+
+### 7.3 Studies
+
+- **On complete MDB data:**
+  - `STUDY_STARTED` equals `GantryStartStudyBkst` one for one (109 of
+    109).
+  - Every study is closed by `STUDY_ENDED`.
+  - 583 of 705 shots fall inside a study. Most of the rest are SME17372's
+    morning sweep (§7.5).
+- **`StudyReady … ID:n` is not a study.** The ID goes up per series, about
+  2–3 per study (85 for 35 studies on SME20598), so EAL can't count
+  studies.
+- **So `pct.study` comes from Events only, from PCT-1b on** (Q5 holds).
+
+### 7.4 Events lines the DB has never seen
+
+- **Three causes keep Events lines out of the DB** (on the MDB data):
+  - the `__NN` suffix (I1);
+  - a comma (I2);
+  - **a line break inside `Msg`**: 1,274 of 24,950 non-relay Events rows
+    (5.1%). The collector works line by line.
+
+  A line can be lost to more than one cause. The line break is part of
+  I2's "other" drops and of I6.
+- **Signals that exist only there:**
+  - `Series # cancelled, due to GANTRY_CANCEL_SOURCE_<CTBOX|HOST|NORMAL_ERROR>, in state …`:
+    43 in the 5 snapshots (CTBOX 37, HOST 5, NORMAL_ERROR 1). This is the
+    operator-versus-system abort split GE has, so §2's "aborts: N" becomes
+    **P after PCT-C and PCT-1b**.
+  - `GantryShotEndAns status != ok`: 53.
+  - `STUDY_ON` / `STUDY_OFF`: 231.
+  - `Host restarted`: 5.
+- **What it means for PCT-C and PCT-1b:**
+  - PCT-C's export has to keep commas and line breaks. Q2's "real CSV
+    export" covers that.
+  - PCT-1b has to parse quoted multi-line fields.
+  - The classifier already flattens line breaks before matching.
+
+### 7.5 Morning calibration sweep
+
+- **On SME17372's snapshot**, 116 shots fall outside any study, between
+  06:42 and 07:00, spread evenly over kV × spot (17 each). That looks like
+  the daily calibration or warm-up, GE's `prep.*`.
+- **In EAL history**, the day's first 20-minute burst covers at least 6
+  kV × spot combinations on:
+  - SME18534: 69 of 124 days, about 95 shots, around 07:00;
+  - SME18535: 10 of 47 days;
+  - SME20598: 3 of 132 days. It scans round the clock, so "first burst"
+    doesn't find the sweep there.
+- **Proposal: watch list (`pct.daily_cal`)**, defined once field service
+  says what the sweep looks like. Shot counts and busy hours should then
+  exclude it.
+
+### 7.6 Codes and templates
+
+- **The 123 codes by category:**
+
+  | Category | Codes | Rows |
+  |---|---|---|
+  | hardware | 75 | 26,661 |
+  | reliability | 24 | 19,709 |
+  | noise | 20 | 6,020 |
+  | service | 4 | 357 |
+
+  Named metrics among them: `pct.slipring_comm` (4 codes, 7,510 rows) and
+  `pct.couch_fault` (21 codes, 711 rows).
+- **Calls for you to check:**
+  - `S_DMC_I2C_COMM2HEATERNOT_OK` (12,695 rows, mostly SME18534) is
+    hardware in `pct.error`, not slip-ring communication.
+  - The two FDOM "default mA used" codes (15,690 rows) are reliability:
+    dose modulation falling back.
+  - Couch limits, tape switch, jogging and "series delay" are noise.
+  - The numeric codes `2` and `33816580` are unknown; they're filed under
+    reliability.
+- **Uncoded EAL rows:** 79% trace, 16% telemetry, 1.3% noise. The signals
+  are shots, inventory, E-stop, power-up, and a few rare fault lines that
+  go to `pct.event`:
+  - `INVERTER FAULT CK#`: 138 rows on 3 systems;
+  - `Close Hor Timeout`: 84;
+  - generator and starter fault lines (`Gen Fault`, `HSSFlt`,
+    `XRAYOnCheckFailed`, …): 18.
+- **Events rows (non-relay):** 69% trace, 14% noise (voice prompts), 10%
+  utilization (series, studies), 5% telemetry (tube heat %).
+- **The tail** is 264 EAL templates (2,015 rows, 0.03%). It counts as
+  `pct.event` with dim `tail:<template>` (Q9).
+
+### 7.7 Questions — AGREED 2026-11-20
+
+You accepted every recommendation below as written on 2026-11-20. Each
+answer is marked **AGREED**; the reasoning is kept as it was.
+
+13. **The v1 metric set and dims (codes doc §1). AGREED: as
+    drafted.**
+    - `pct.shot` (dim `<kV>/<spot>/<mode>`);
+    - `pct.xray_ms`;
+    - `pct.error` (dim = code);
+    - `pct.estop`;
+    - `pct.slipring_comm`;
+    - `pct.couch_fault`;
+    - `pct.inventory` (dim `<key>=<value>`);
+    - `pct.event`.
+14. **E-stop. AGREED: the §7.2 definition.** The union of loop-open,
+    opened and ESTOP-type codes, merged into 10-minute episodes. Start-up
+    lines are excluded, and history before PCT-1b is labelled a lower
+    bound.
+15. **Code categories (codes doc §3). AGREED, including
+    the §7.6 calls.** A later field-service change is a versioned rules
+    change, as on GE.
+16. **What emits `pct.event`. AGREED:** reliability, hardware and
+    service rules without a named metric, plus the tail. Telemetry, trace
+    and noise emit nothing in v1 (viewer only).
+17. **New watch-list items. AGREED: add them, and make "these lines
+    arrive" part of the PCT-C and PCT-1b exit criteria.**
+    - `pct.series_cancel` (operator / system), `pct.shot_not_ok` and
+      `pct.daily_cal` join the watch list.
+    - `pct.series_cancel` is a v1.1 candidate after 30 days of data.
+18. **PCT-1b fixtures. AGREED:** build them from the 5 snapshots'
+    rows (suffixed, comma and multi-line lines included), masked as the
+    rules require. Keep them in the evidence folder; commit only the
+    masked fixtures.
