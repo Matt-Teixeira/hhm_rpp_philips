@@ -880,3 +880,16 @@ All are fixed. The listing runs in a subshell with `touch`-based state; every `l
 process group is killed when it ends; durations must be 1–86400 s. 50/50 jest tests pass, every
 mutation but one is caught (the subshell is now a second layer), and real-data equivalence was
 rerun. Ready for round 4.
+
+**Review round 4 (2026-11-20, on `00e94e1`):** `REVIEW-PCTC-COLLECTOR-CODEX-4.md` found 0 P1 and 1 P2
+(R4-1: if the collector shell is killed, its process-group cleanup never runs). That was the only
+blocker. Fixed: `session()` now runs as a supervising subshell, which survives the shell and cleans
+up. A combined regression test was added (51/51 pass, and it fails on the round-3 form), and
+real-data equivalence was rerun.
+
+**Review round 5 (2026-11-20):** `REVIEW-PCTC-COLLECTOR-CODEX-5.md` found 0 P1, 0 P2, 0 P3. Verdict:
+**ready to promote to STAGING and PROD** once the reviewed fix is committed. What's left for PCT-C:
+- your promotion;
+- the prod pull;
+- reachability (§8.1);
+- checking the first successful grab (§8.3).
