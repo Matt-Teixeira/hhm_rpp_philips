@@ -824,7 +824,26 @@ and waiting for the Codex review. Reachability is still down. Evidence:
   Philips CT consoles listed above; connections time out. Please check the site VPN tunnels and
   firewall rules for the CT host addresses on file, and whether the consoles' SSH service still
   runs."
-- **No code depends on this.** The fix below can deploy first.
+- **Narrowed on 2026-11-20** (`pctc/out/10_site_peers.tsv`, `11_site_peers_detail.tsv`; booleans
+  and counts only):
+  - all 9 CTs use the same VPN entry;
+  - at site C000450, a **GE CT on that same VPN connects on every run**, so the tunnel is up;
+  - five **Philips CV/IR** systems at the same sites (C000225, C000450, C000515) time out on every
+    run, 288 in 3 days, and three more show 26 failures each;
+  - those CV/IR failures are **older than the CT outage**: connection errors on every day of the
+    45 days checked (`pctc/out/12_cv_failure_onset.tsv`), while the CTs last delivered data on
+    2026-10-30 / 2026-11-02.
+
+  So the problem looks Philips-specific, not a tunnel outage. Likely candidates: the route or
+  firewall rule for the Philips devices' address range at those sites. The CV/IR problem may be a
+  separate, long-standing one.
+- **Updated ticket text:** "The site VPN is up (other equipment at the same sites connects). Since
+  about 2026-11-02, SSH (TCP 22) to the 9 Philips CT consoles times out. Several Philips CV/IR
+  systems at the same sites have also been timing out since at least early October. Please check
+  routing and firewall rules for the Philips device addresses, and whether anything changed on the
+  Philips network segment or the CT consoles around 2026-11-02."
+- **No code depends on this.** The collector fix is already deployed (2026-11-20 19:26 UTC); the
+  first run behaved as designed.
 
 ### 8.2 The export fix (Q2 step 2) and the reset question (step 3)
 
