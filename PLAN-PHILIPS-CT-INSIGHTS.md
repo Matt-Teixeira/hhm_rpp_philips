@@ -3,8 +3,8 @@
 **Current state (2026-11-20; read this first):**
 - **PCT-0 (decide): done. All 12 §5 recommendations AGREED on
   2026-11-20**, as written (§5). The evidence below is read-only and was
-  gathered against prod on 2026-11-20. Nothing is built, nothing is committed, nothing was written
-  to the DB, Redis or the files. `hhm_rpp_ge` was only read.
+  gathered against prod on 2026-11-20. Nothing was written to the DB,
+  Redis or the files by this plan's work. `hhm_rpp_ge` was only read.
 - **No Philips CT system sends data today.** The last row arrived on
   2026-11-02 15:48 UTC (SME20598). The collector reaches none of its 9
   systems: every SSH connection times out (§1.3). Collection comes first.
@@ -19,13 +19,21 @@
   (after the 2026-11-23 21:25 UTC check). The schema and C1-Philips work
   there (§4) waits for it.
 - **Next (§6):**
-  - the collector session (PCT-C), started 2026-11-20 (§8): the export
-    fix is written and tested, uncommitted, and waiting for the Codex
-    review. Reachability is still down; that is network work (§8.1);
+  - the collector session (PCT-C, §8): the export fix passed 5 Codex
+    rounds, was promoted, and has been deployed to prod since 2026-11-20
+    19:26 UTC. The legacy `.output` files are unchanged, with complete
+    `.csv` files next to them. Reachability is still down; that is network
+    work (§8.1);
+  - **the parser fix (PCT-1b, §9): plan AGREED 2026-11-20** (Q19–Q26,
+    as recommended): the stateless transition rule O2s (0 duplicate
+    Events rows and no never-stored row lost on the 5 copies), R2 text,
+    then a `config.log` switch to `.csv` that you run after the code
+    deploy. Build from 2026-11-24 18:53 UTC;
   - the mapping (PCT-2a): **AGREED 2026-11-20** (§7.7 Q13–Q18, as
     drafted). It becomes `insight/philips_ct/rules.js` in PCT-2;
   - the parser fix (PCT-1b) is built after 2026-11-24 18:53 UTC (Q3) and
-    deployed with or after PCT-C's export change (Q4);
+    deployed with or after PCT-C's export change (Q4, now deployed). Its
+    close-out needs one live capture, so it waits on reachability;
   - the schema (PCT-1) waits for the GE MRI close-out and for PCT-C to
     show data (Q7, Q11).
 
@@ -587,7 +595,7 @@ answer is marked **AGREED**; the reasoning is kept as it was.
 |---|---|---|---|
 | **PCT-0 Decide** | this plan; §5 answered | your answers recorded as AGREED | **done 2026-11-20** |
 | **PCT-C Collection** (separate session, `hhm_data_acquisition`) | Q2: reachability for the 9 systems; Events export without loss; atomic write; the reset question | at least 1 system grabbed on 5 consecutive clean days; on a fresh `Logger.mdb`, output rows = MDB rows for both tables; outputs written atomically; comma and multi-line `Msg` lines arrive (Q17); review closed | network work now; code after your go-ahead |
-| **PCT-1b Ingest integrity** (this repo) | Q4: suffix, `Msg` / flag, whole-file + key dedupe, quiet missing files; tests on masked fixtures from the 5 snapshots (Q18) | DB = MDB on every snapshot, including suffixed, comma and multi-line Events lines (Q17) and on a live capture (keys and content, both tables); 0 duplicates across a reset; `DRY_RUN` rehearsal; Codex review; deployed by you; 5 clean days | build after 2026-11-24 18:53 UTC (Q3); deploy with or after PCT-C's export change |
+| **PCT-1b Ingest integrity** (this repo; planned in §9) | Q4: suffix, `Msg` / flag, whole-file + key dedupe, quiet missing files; tests on masked fixtures from the 5 snapshots (Q18) | DB = MDB on every snapshot, including suffixed, comma and multi-line Events lines (Q17) and on a live capture (keys and content, both tables); 0 duplicates across a reset; `DRY_RUN` rehearsal; Codex review; deployed by you; 5 clean days | build after 2026-11-24 18:53 UTC (Q3); deploy with or after PCT-C's export change |
 | **PCT-2a Mapping** | `PLAN-PHILIPS-CT-INSIGHTS-CODES.md` grows into the reviewed mapping (rules, ignore list, `kdb` labels) | mapping agreed (§7.7 Q13–Q18) | **done: AGREED 2026-11-20** |
 | **PCT-1 Schema** (`hhm_rpp_ge`) | C1-Philips; scanner and catalog allowlist for `api.philips_ct_*`; migration 010; the writer grant | tests; local rehearsal; Codex review; you apply | after the MRI close-out (2026-11-23), and only once PCT-C shows data |
 | **PCT-2 Extract** | `insight/philips_ct/` rules + extract + backfill (EAL from 2026-05, Q5) | dry run = independent SQL per system × metric; review closed | after PCT-1 and PCT-1b |
@@ -912,3 +920,261 @@ real-data equivalence was rerun.
 - the prod pull;
 - reachability (§8.1);
 - checking the first successful grab (§8.3).
+
+---
+
+## 9. PCT-1b: the parser fix (planning started 2026-11-20; read-only so far)
+
+**Status:** plan AGREED 2026-11-20 (Q19–Q26, §9.7). No code is changed before 2026-11-24
+18:53 UTC (Q3). Everything below was
+gathered read-only on 2026-11-20: prod DB through `scripts/q.js`, prod files and
+`/home/prod/alert-processor` read, nothing written to the DB, Redis or any file outside the
+evidence folder. Evidence: `~/philips_ct_evidence/pct1b/` (README).
+
+**Preconditions checked on 2026-11-20** (`pct1b/out/04_cutover_still_clean.tsv`):
+- **The cutover is still clean** (day 1 of 5). `hhm_rpp` has logged no run since 2026-11-19
+  18:50:28. `PHILIPS_CT` has run 53 times from `hhm_rpp_philips`, each with the same 56 warn/error
+  entries (the missing-file noise, I7). `PHILIPS_MRI_LOG_1-5` warn/error rates match `hhm_rpp`'s
+  in the 3 days before (e.g. LOG_1 averages 10.9 vs 10.1).
+- **The live crontab can't be read from this user.** The run logs above are the evidence; you
+  confirm the crontab at deploy (step 1b.5).
+- **The `hhm_rpp_ge` close-out has not happened yet.** MRI monitoring runs until 2026-11-23
+  16:48 UTC, then the close-out. PCT-1b needs nothing there; I only read it.
+
+### 9.1 What the five copies say about the `.csv` files
+
+The real collector (`phil_ct_data_grab_1.sh` at `aa68ceb`) was run against each `Logger.mdb`
+copy with the stub `lftp` (`pct1b/scripts/build_csv.sh`, `out/01_build_csv.txt`). It gave 179,478
+rows: 77,264 EAL and 102,214 Events. A reference decoder (`pct1b/scripts/csvref.py`: quoting
+first, then one left-to-right unescape pass) reads them as follows:
+- **Header and fields:** every line has exactly the header's field count, and every key matches
+  `yyyy/MM/dd HH:mm:ss.SSS` with an optional `__NN`. The highest suffix is `__21`. SME18534 and
+  SME18976 have no suffixed rows at all.
+- **NULL vs empty text:** NULL is an unquoted empty field. It occurs in EAL `ErrNum`, `File` and
+  `Info` (252 rows) and in Events `EAL`. Empty text (`""`) occurs only in `BLOB`, which isn't
+  stored. So in real data the two never need telling apart; the decoder still keeps them apart.
+- **Hard cases in `Msg`:**
+  - commas in 4,468 rows, line breaks in 1,274, backslashes in 959 (Windows paths), trailing
+    whitespace in 4,306;
+  - no double quotes and no non-ASCII text in any copy, so those cases get synthetic tests.
+- **Table order is not time order.** The time steps back up to 20 h between consecutive rows
+  (`out/15_table_order.txt`). So file order can't be used to tell the two passes
+  of the DST hour apart (§9.5).
+- **No unique index in `Logger.mdb`.** `mdb-schema` shows none. Keys were unique in all 5 copies,
+  but no copy spans a DST fall-back. The repeated hour could put the same key twice in one file,
+  so dedupe counts rows (a multiset) and doesn't assume unique keys.
+
+### 9.2 Who reads `log.philips_ct_eal_events` (inventory, 2026-11-20)
+
+Sources: the catalog, `pg_stat_statements` since 2026-10-23, a code search of `~/hep3`, and
+`/home/prod/alert-processor` (`out/02`, `03`, `14`).
+
+| Reader | What it reads | What PCT-1b changes for it |
+|---|---|---|
+| **alert-processor** (prod cron `24,54`; 1,373 calls) | `SELECT *` of rows with `capture_datetime` in the last 30 min, for `process_log` systems. It tests each row against the system's enabled models: 13 per collected system, all `err_number contains` (27,624 rows, 14,322 enabled) | **Matching: nothing.** Events rows have `err_number` NULL before and after, so they never match. **Volume:** each Events row is still tested and logged as untested (a WARN per model). Events rows per run grow about 2.2× (27,824 vs 12,627 in SME20598's window), so CT rows per run grow about 45%. **Timing:** the CT run must finish before `:24`, or its rows fall outside the next 30-min window. Budget: under 5 minutes (measured: under 1 minute, §9.6) |
+| `log.log_recent_files` view | the newest `host_datetime` per system | nothing, except that `host_datetime` in the DST hour becomes deterministic (§9.5) |
+| `alert.offline_hhm_conn` | upserted by the EAL ingest with the newest `host_datetime` | same meaning: the newest `host_datetime` among EAL rows inserted in the run, and no upsert when nothing new arrives |
+| archive job (`fse_dispatch` `archive-partitions.sql`) | moves whole partitions | nothing |
+| the insight layer (PCT-2, future) | `message` whole and the real `eal` flag | what Q4 wants. Events are used from the deploy onward (Q5) |
+
+- **Nothing else reads it:** no functions, triggers or other views. The only grant is the app
+  role. The `hhm_parsers` and `staging/HEP3_HHM` copies are old code and not in the prod crontab.
+- **Correction to the brief:** the file names come from `config.log` (query `PHILIPS_CT`), not
+  `public.systems.hhm_file_config`. That column still holds a stale CT entry on 13 systems; this
+  app doesn't read it.
+
+### 9.3 The transition from old-parser rows (the big question)
+
+**The problem, measured.** For every key window of the 5 copies, I fetched what the old parser
+stored (`sql/05`; `log` for the 3 recent systems, `archive_log` for the two 2025 copies).
+That is 117,274 rows. Every one of them is in its copy (0 stored-only keys). Then I counted what
+each option would insert (`scripts/transition.py`, `transition_shape.py`; `out/07`, `out/13`).
+
+Text form "R2" below means: `eal_time` / `event_time` in the old `MM/dd/yy HH:mm:ss` text and
+`Info` right-trimmed (Q20).
+
+| Option | Inserted from the 5 copies | Duplicates of stored rows | Never-stored rows lost |
+|---|---|---|---|
+| **O1** key + content only, R2 text | 69,043 | **6,839** (every old split-`Msg` Events row) | 0 |
+| O1 with exact export text (R1) | 179,478 | **117,274** (everything) | 0 |
+| **O2** rows captured before the switch match on key only | 62,204 | 0 | 0 |
+| **O2s** old split-shape Events rows match on key only (stateless), R2 text | 62,208 | 0 Events; the 4 EAL rows in the note below | 0 |
+| O3 high-water key per system and kind | 30,949 | 0 | **31,255** (suffixed rows below the mark) |
+| O4 cutover timestamp on device time | 0 | 0 | **62,204** |
+
+- **O2s works because the split shape gives the old rows away.** The old parser put the rest of a
+  multi-word `Msg` into `eal`. A new row's `eal` is always `Yes` or NULL. So a stored Events row
+  whose `eal` is neither `Yes` nor NULL is an old split row.
+  - On the copies, every Events content difference is one of these: 1,969 / 973 / 1,463 / 2,430
+    rows, equal to O1's duplicates exactly.
+  - Every other stored row (EAL, and Events with a one-word `Msg`) is already byte-equal in R2
+    text: 110,435 rows.
+- **Note: 4 rows were revised between grabs.** On SME18535 and SME18976, two pairs of EAL rows
+  stored by the old parser have garbled (`ā࿈噌䱁`) or NULL `Info`. The later copy has the real
+  text (`MP-Ctrl- Direction Changed.`, `TapeSw pressed`, …) (`out/08`). Each was captured about
+  8 minutes after it was logged, so the scanner was probably still writing its memo field. Under
+  Q6 the corrected row is kept as a second row with the same key. Whole-file parsing will see the
+  same thing now and then, for both kinds (Q25).
+- **Why not O2:** it needs a stored boundary: a Redis key set by the first run, or an env value
+  you set at deploy. Losing or mis-setting it makes rows match the wrong way. O2s needs no state
+  and gives the same result on the copies, apart from the 4 revised rows.
+- **Why not O3 / O4:** they drop rows nothing ever stored. For O4 that is the whole first buffer,
+  and suffixed rows are about half the Events.
+- **In practice the overlap may be empty.** A scanner in use resets its buffer within 2.3 days,
+  and all 9 have been unreachable since 10-30 / 11-02. But if reachability returns before this
+  deploys, the old parser stores more rows from the same buffers, so the rule is needed.
+- **The 2025 copies** (SME17372, SME18976): their stored rows are in `archive_log`, which the
+  dedupe doesn't read. If a long-silent system came back with a buffer that old, its rows would be
+  stored again in `log`. That's unlikely (the buffer resets), and the insight layer dedupes on the
+  key anyway. Accepted.
+
+### 9.4 Switching from `.output` to `.csv`
+
+- **Today:** `config.log` has 26 `EALInfo.output` rows (`regex_models {ct_eal_v_2}`) and 25
+  `Events.output` rows (`{ct_events_v2}`). SME17372 has no Events row. 9 of these systems are
+  collected (`out/06`). No other app reads these `config.log` rows; the collector writes every file
+  for every collected system on its own.
+- **Proposed (Q21):**
+  - the new code reads only names ending in `.csv`. A `.output` name is skipped, with one WARN
+    per run;
+  - after the code is deployed you run one `UPDATE` (draft below) that changes `file_name` and
+    `regex_models` on those 51 rows;
+  - **order: code first, then config.** The old code with a `.csv` name would be wrong: its EAL
+    regex half-matches a CSV line. For rollback, config first, then code;
+  - a configured file that doesn't exist is skipped silently (I7). Until reachability returns,
+    that's every system: no rows, no errors.
+
+  ```sql
+  -- draft; you run it after the PCT-1b deploy. Rollback: swap the names back.
+  UPDATE config.log l SET file_name = 'EALInfo.csv', regex_models = '{ct_eal_csv}',
+         last_updated_by = 'PCT-1b', last_updated_at = now()
+  FROM systems s JOIN config.acquisition ac ON ac.system_id = s.id
+  WHERE l.system_id = s.id AND s.manufacturer = 'Philips' AND s.modality LIKE '%CT'
+    AND ac.run_group = 1 AND l.file_name = 'EALInfo.output';          -- expect 26
+  -- same for Events.output -> Events.csv, '{ct_events_csv}'           -- expect 25
+  ```
+- **Redis (Q22):**
+  - the shared keys `<SME>.EALInfo.output` / `<SME>.Events.output` are no longer read or written,
+    and keep their last offsets. `hhm_rpp` no longer runs CT (§1.1), and the new code never uses
+    those names;
+  - **rollback needs them reset:** before going back to the old code, set each to its current
+    `.output` size, or the old parser re-reads a partial tail. The commands go in the deploy notes;
+  - new keys `<SME>.EALInfo.csv` / `<SME>.Events.csv` hold `{size, sha256}` of the last file fully
+    ingested. An identical file is skipped (an idle scanner gives byte-identical exports every
+    grab). This is only an optimisation: if a key is lost, the next run re-reads the file and
+    dedupe inserts nothing.
+- **The `.output` files (Q26):** the collector keeps writing them and nothing reads them.
+  `log.saved_files` stops getting them, because `gzip_n_save` saves the configured names. After 5
+  clean days, a separate small collector step (PCT-C2, `hhm_data_acquisition`) removes the legacy
+  exports.
+
+### 9.5 Design
+
+New code under `jobs/Philips/CT/`. The byte-offset path is removed: `eal_parser.js`,
+`events_parser.js`, and the CT use of `data_acquisition/Philips_CT.js`.
+
+| Piece | What it does |
+|---|---|
+| `csv.js` | **Decode.** A CSV state machine over the whole text: quoted fields, `""` → `"`, records end at LF or CRLF outside quotes. Then one left-to-right unescape pass per field: `\n \r \t \\`; any other backslash pair is kept as is. An unquoted empty field is NULL; `""` is empty text. Malformed quoting throws |
+| `rows.js` | **Build rows.** Checks the exact header of each table. Splits the key into `host_date` and `host_time` (suffix kept, I1). EAL columns as today. Events: `message` = `Msg` whole (line breaks and trailing whitespace kept), `eal` = `EAL` (`Yes` / NULL) (I3). R2 text (Q20). BLOB dropped |
+| `time.js` | **`host_datetime`** from the wall clock and the site time zone, `America/New_York` when NULL (as today). **The repeated DST hour always takes the earlier offset** (luxon 3.6 `getPossibleOffsets()`), so the stored instant no longer depends on when the parser ran (§1.5; `out/16_luxon_dst.txt`). Non-existent spring-forward times move forward, as luxon does now |
+| `ingest.js` | **Per file, in one transaction:** `pg_advisory_xact_lock(system, kind)`; read the stored rows of that system and kind with `host_datetime` within the file's span ±1 day; a multiset diff on (key, content) with the O2s rule; insert what's left in batches of 5,000; commit. Kind: Events if any Events column is set, else EAL. Content: the 20 text columns, without `host_datetime`, `capture_datetime`, `id` and `status`, so a time-zone or DST fix never creates a duplicate. `capture_datetime` = when the file's processing starts |
+| `index.js` | **Per configured file:** skip if missing (silent) or not `.csv` (WARN). Skip if the Redis hash is unchanged. Otherwise ingest, then update the hash, then `gzip_n_save` as today. The EAL ingest upserts `alert.offline_hhm_conn` |
+
+- **Fail closed (Q24):** a wrong header, bad quoting, a wrong field count or a malformed key is an
+  ERROR for that file. Nothing from it is inserted and its hash isn't updated, so the next run
+  tries again. Nothing is dropped silently.
+- **DRY_RUN:** today's guard refuses `db.tx`. Under `DRY_RUN=1`, `ingest.js` skips the
+  transaction and lock, runs the read as a plain `SELECT`, and records the inserts as now. Redis
+  writes are skipped by the existing proxy.
+- **Not changed:**
+  - `scan_seconds` (CT never wrote `logfile_event_history_metadata`);
+  - the table and its indexes;
+  - the other Philips jobs.
+- **Node 16:** prod runs v16.20. The code avoids anything newer. Tests use `node --test`, which
+  works on 16.20 and is what `hhm_rpp_ge` uses, so no new dependency.
+- **Fixtures (Q18):** rows from the 5 copies chosen to cover suffixed, comma, multi-line, NULL
+  `Info`, coded, twin and `Series … cancelled` rows. A scan found no IP, MAC, host, serial or AE
+  title in any copy (`out/12`); the fixture builder still masks those patterns and fails if any
+  remain. System ids become `SME00001…`.
+  - The folder must be lower-case `__tests__/fixtures/philips_ct/`: the repo's `.gitignore`
+    ignores any path component named `Philips_CT`.
+  - Raw copies and the generated `.csv` files stay in `~/philips_ct_evidence/`.
+
+### 9.6 Performance (measured 2026-11-20)
+
+- **Decode + diff in Node 16** (`scripts/bench_parse.js`, `out/10`): at most 232 ms decode +
+  224 ms diff for the largest file (3.33 MB, 30,949 rows). Heap under 100 MB.
+- **The stored-rows read** (`sql/06`, `out/09`, `out/11`):
+  - on the server, 18–69 ms (index scans on `(system_id, host_datetime)`, with no partition
+    pruning needed);
+  - end to end for the busiest system's padded 3-day window (87k rows, both kinds, full
+    content), 1.9 s. Key plus an md5 of the content halves that, but the full read is kept: it
+    avoids an SQL/JS hash-equivalence risk.
+- **Per run, worst case** (all 9 systems changed): about 9 × (2 × 0.5 s + 2 × 1–2 s) ≈ 30 s. An
+  unchanged file costs one sha256 (milliseconds).
+- **Inserts:** the first parse of a full buffer inserts up to about 31k rows per file. The old
+  parser did the same on every reset ("Reading entire file"). The batches go in one transaction
+  per file.
+- **December partition:** every `log.*` table ends at `…_2026_11` today. Creating the 2026-12
+  partition is routine fleet-wide work, but no CT insert can land in December without it.
+
+### 9.7 Questions — AGREED 2026-11-20
+
+You accepted every recommendation below as written on 2026-11-20. Each answer is marked
+**AGREED**; the reasoning is kept as it was.
+
+19. **The transition from old rows. AGREED: O2s (§9.3).** Old split-shape Events rows
+    match on key only. Everything else matches on key plus content, as in Q6. It needs no stored
+    state, and on the 5 copies it gives 0 duplicated Events rows and loses nothing that was never
+    stored. Not chosen:
+    - O1 (6,839 duplicates);
+    - O2 (the same result but needs a stored boundary);
+    - O3 / O4 (lose 31k / 62k never-stored rows).
+20. **Text form of the unchanged columns. AGREED: R2:**
+    - `eal_time` and `event_time` in the old `MM/dd/yy HH:mm:ss` text;
+    - `Info` right-trimmed, as the old parser did (the device pads it to a fixed width), with an
+      all-blank `Info` stored as NULL.
+
+    Everything else is stored exactly: `Msg` whole, NULL vs `""` kept. Each column then stays
+    uniform across old and new rows, and new EAL rows equal old ones byte for byte (77,260 of
+    77,264; the other 4 are the revised rows). "DB = MDB" in the exit criteria means equal apart
+    from these two documented forms. Not chosen: R1 (exact export text), which makes O2s
+    impossible for EAL and mixes two formats in two columns.
+21. **Switching files. AGREED: the `config.log` `UPDATE` in §9.4, which you run after
+    the code deploy.** The code refuses `.output` names. Not chosen: mapping `.output` → `.csv` in
+    code without a DB write. That's one step fewer, but the config would no longer say what is
+    read.
+22. **Redis. AGREED:**
+    - leave the `.output` offset keys as they are, with a reset step in the rollback notes;
+    - add the `<SME>.<file>.csv` hash keys to skip unchanged files.
+
+    Not chosen: no Redis at all. That works, but it re-reads every unchanged file and its stored
+    rows on every run, about 20–30 s and tens of MB of reads per run for nothing.
+23. **The DST hour. AGREED: the earlier offset, deterministic (§9.5), with
+    `host_datetime` kept out of the dedupe content.**
+    - Keys and days stay on the wall clock (Q8).
+    - Old rows aren't corrected (Q5).
+    - Second-pass rows get an instant 1 h early, one hour a year per system. No field
+      disambiguates the two passes: table order isn't time order (§9.1), and `TStampNum` is also
+      wall clock.
+24. **A malformed file. AGREED: fail closed for that file** (ERROR, nothing inserted,
+    retried next run). Not chosen: skipping bad rows, which would drop rows silently.
+25. **Rows revised between grabs (§9.3 note). AGREED: keep both rows, as Q6 says. The
+    insight layer's rule (prefer the latest capture per key outside the DST hour) is decided in
+    PCT-2.** 4 of 117,274 stored rows so far.
+26. **The `.output` files. AGREED:** the collector keeps writing them and the parser
+    ignores them until 5 clean days after the PCT-1b deploy. Then PCT-C2, a separate small
+    `hhm_data_acquisition` step reviewed like PCT-C, removes the legacy exports.
+
+### 9.8 Steps and exit criteria
+
+| Step | Content | Exit | Earliest |
+|---|---|---|---|
+| **1b.0 Plan** | this section | Q19–Q26 answered and recorded as AGREED | **done: AGREED 2026-11-20** |
+| **1b.1 Build** | `csv.js`, `rows.js`, `time.js`, `ingest.js`, `index.js`; masked fixtures; tests under `__tests__/` (`node --test`) | **Decoder:** literal backslashes, `\\n` vs `\n`, doubled quotes, CRLF, tabs, adjacent escapes, a trailing lone backslash, empty vs NULL, non-ASCII. **Rows:** header and key checks, suffix, `Msg` / flag, R2. **Time:** DST both ways, NULL zone. **Ingest** (DB stubbed): multiset diff, O2s, re-run, reset, fail closed, missing file silent, `.output` refused, hash skip. Each test is checked to fail under a matching mutation. No test opens the network or a real DB; every child process is bounded | after 2026-11-24 18:53 UTC, once you confirm the cutover closed |
+| **1b.2 Exactness** | throwaway PostgreSQL 14 (local `initdb`, socket only) with the table's DDL; the real parser code; the 5 copies' `.csv` files | **DB = MDB** for every copy, both tables: the multiset of (key, content) equals an independent reference (plain `mdb-export` → Python) modulo R2. That includes the suffixed, comma and multi-line Events rows and the 43 `Series … cancelled` lines. **0 inserted on a re-run. 0 duplicates across a simulated reset** (half a buffer, then the full one, then a disjoint one). **Transition rehearsal:** old rows from `sql/05` loaded first, then each copy: inserted = the O2s column of §9.3 | after 1b.1 |
+| **1b.3 DRY_RUN** | `DRY_RUN=1` from the dev checkout against prod (read-only sessions) | (a) prod's files as they are: every CT file skipped silently, 0 writes, 0 CT errors. (b) `DEV_FILE_PATH` pointing at the copies' `.csv` for SME20598 / SME18534 / SME18535: the planned inserts equal the O2s numbers against the real stored rows, run time recorded. The parity check doesn't apply: `hhm_rpp` no longer runs CT, and MDB is the reference (1b.2) | after 1b.2 |
+| **1b.4 Review** | `REVIEW-PCT1B-PARSER-HANDOFF.md` → Codex → `REVIEW-PCT1B-PARSER-CODEX.md`; fixes recorded here | the review closed; then commit with your OK | after 1b.3 |
+| **1b.5 Deploy** (you) | confirm `crontab -l` has no `hhm_rpp … philips_ct` line; promote `DEV` → `STAGING` → `PROD`; pull in `/home/prod/hhm_rpp_philips`; the `config.log` `UPDATE`; watch the next `:18` / `:48` run | the first run: `PHILIPS_CT` warn/error 56 → 0 (all files missing, silent), nothing inserted | after 1b.4, and with or after PCT-C (done) |
+| **1b.6 Monitor** | 5 clean days; and once a CT system is reachable, its first `.csv` grab | 5 clean days of runs. **On the first live capture:** DB = that grab's `Logger.mdb` (keys and content, both tables), 0 duplicates on the following runs, and the alert-processor run after it still in its window. Close-out needs the live capture (§6), so it waits on reachability (§8.1) | after 1b.5 |
