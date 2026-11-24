@@ -1,5 +1,45 @@
 # Review handoff: PCT-1b parser fix design (Philips CT), before the build
 
+## Round 5 (2026-11-24): the design revised for `REVIEW-PCT1B-PLAN-CODEX-4.md`
+
+Repo `hhm_rpp_philips`, branch `DEV`. The round-4 revision is committed on `DEV`, on top of `8e95ed3`.
+**§9 is authoritative**; the changes are listed in §9.12. Please write round-5 findings to
+`REVIEW-PCT1B-PLAN-CODEX-5.md`. Ground rules unchanged (below). Q27–Q40 are AGREED (Q40 is now
+superseded by Q41). Q41–Q44 are AGREED too (2026-11-24, as recommended). Still no parser code.
+
+**The main change is a deliberate narrowing.** Three of your four round-4 findings were in Q40's
+after-the-fact proof and its automatic re-stamps. Rather than add more machinery, Q41 replaces
+them. Coverage is delivered by construction: the phase, a DB-clock guard before `COMMIT`, a
+forward host/DB clock check, and a DELIVERED / `late` classification from `t1`. PCT-1b no longer
+certifies that the reader *succeeded*; that is left to the alert processor's own monitoring, as
+for every other log table.
+
+| Round-4 finding | Change | Where | New evidence (`~/philips_ct_evidence/pct1b/`) |
+|---|---|---|---|
+| 1 P2 receipt expiry | Unknown outcome decided by the recorded ids after the barrier (all present → committed; none → aborted; a mix, or a receipt without its ids → ERROR and stop, never a fresh attempt). The receipt is a cross-check. ERROR at 24 h unresolved | §9.5 `ingest.js`, Q42 | checked: `delete_old_files` (48 h) is in this app and `hhm_rpp`; nothing deletes from `log.philips_ct_eal_events` |
+| 2 P2 re-stamp recovery | No automatic re-stamps. A late commit → `late` entry kept in the spool, ERROR each run. A manual `tooling/philips_ct_restamp.js` writes intent and ids before `COMMIT` and decides its outcome after the barrier by where the ids are (old or new capture) | §9.5, Q41, Q44 | |
+| 3 P2 error labels | Reproduced: the stored label is `ERROR`. Rerun with the corrected filter: **0 `ERROR` entries of any function in 672 runs** (only `WARN` stored). The parser no longer certifies reader success; 1b.6 monitors it with the corrected filter, `testRowForLogAlert` included | §9.5 `coverage.js`, 1b.6 | `sql/12`, `out/25` |
+| 4 P2 historical clock | No historical reader timestamp is used. The offset (+ round trip ≤ 10 s) is checked before the attempt, forward to the reader at most 24 min later. Assumption K (≤ 50 s further movement) is stated; chrony state recorded; an offset change over 10 s between runs → WARN naming the attempts in between | §9.5 `coverage.js`, Q41 | chrony synced to `metadata.google.internal`, offset µs (2026-11-24) |
+
+Required additions: 1 → 1b.2 receipt lifecycle; 2 → 1b.2 `late` and repair; 3 → `out/25`, 1b.6;
+4 → the journal is gone (one audit file per attempt under the system lock, read by nothing);
+5 → Q43 (`idle_in_transaction_session_timeout` 2 min, keepalives, pid diagnostics, WARN 30 min /
+ERROR 2 h unknown, pending-age WARN 1 h / ERROR 6 h) and 1b.2 barrier; 6 → separate statements
+under Read Committed (§9.5 `ingest.js`) and 1b.2 barrier.
+
+**Please look hard at (round 5):**
+1. **Q41's classification.** With the phase `(N + 6 min, N_next − 2 min)`, `t1 < N_next − 90 s`,
+   the offset within 60 s when the reader fires (assumption K) and the CT query within 4 min of
+   the reader's start (assumption D), does exactly one scheduled reader read the rows? Is anything
+   besides K, D and reader success assumed?
+2. **The narrowing itself.** Is leaving reader success to the alert processor acceptable for
+   PCT-1b, given that the old parser and every other log table already depend on it? If not,
+   say what minimal check you would require.
+3. **Q42.** Can the recorded ids be present without this attempt having committed, or absent
+   when it did (sequence ids, partitions, archive tables)? Is the zero-id case safe?
+4. **Q44's repair tool.** Is its intent/outcome protocol sound at every crash point?
+5. Whether the §9.8 additions now test what each round-4 finding needed.
+
 ## Round 4 (2026-11-24): the design revised for `REVIEW-PCT1B-PLAN-CODEX-3.md`
 
 Repo `hhm_rpp_philips`, branch `DEV`. The round-3 revision is committed on `DEV`, on top of
