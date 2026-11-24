@@ -1,5 +1,34 @@
 # Review handoff: PCT-1b parser fix design (Philips CT), before the build
 
+## Round 4 (2026-11-24): the design revised for `REVIEW-PCT1B-PLAN-CODEX-3.md`
+
+Repo `hhm_rpp_philips`, branch `DEV`. The round-3 revision is committed on `DEV`, on top of
+`f4da136`. **§9 is authoritative**; the changes are listed in §9.11. Please write
+round-4 findings to `REVIEW-PCT1B-PLAN-CODEX-4.md`. Ground rules unchanged (below). Q27–Q37
+are AGREED (Q37 now superseded by Q38); Q38–Q40 are AGREED too (2026-11-24, as recommended). Still no parser code.
+
+| Round-3 finding | Change | Where | New evidence (`~/philips_ct_evidence/pct1b/`) |
+|---|---|---|---|
+| 1 P1 ambiguous class suppresses a new revision | Only old-form time text ⇒ old row (projection only); anything else ⇒ new (exact only). New rows are validated never to be old-form | §9.3, Q38 | |
+| 2 P1 capture time isn't a transaction identity | Attempt uuid in `state.json` before `BEGIN`; inserted ids + capture text `fsync`ed as `committing` before `COMMIT`; `log.saved_files` insert in the same transaction is the receipt (its PK is `(system_id, file_name, capture_datetime)`); unknown outcome decided after `pg_advisory_xact_lock(system, kind)` (`lock_timeout` 10 min), else stays unknown; capture kept as text; per-system `flock` on the spool | §9.5 `ingest.js`, Q39 | catalog: `log.saved_files` has no `id`, PK as above |
+| 3 P2 old row with new-form time | Reproduced. Under Q38 it's a bounded deliberate duplicate | §9.3 | `scripts/eal_time_shape_census.js`, `out/23`: 0 of 77,264 copy EAL rows project to non-old-form time |
+| 4 P2 closed phase endpoint | Strict `(N + 6 min, N_next − 2 min)` on the exact capture text; re-stamps too | §9.5 `coverage.js` | |
+| 5 P2 completion drops coverage work | `journal.js`: 90-day append-only `fsync`ed journal; coverage read from the journal; spool deleted only after the journal record | §9.5, Q40 | |
+| 6 P2 timing study / audit | Redone by start time (`dt`), per-slot multiplicity, failure flags. Coverage proved per attempt from a successful run (start − ε > `t1`, end + ε < `c` + 30 min, no `E` from `onBoot` / `insertAlertDetections`), else re-stamp by id (≤ 3) | §9.5 `coverage.js`, Q40 | `sql/11`, `out/24`: 672/672 slots, one run each, start +1.3–2.8 s, ≤ 51 s, 0 failures; host vs DB clock ≈ 40 ms |
+
+**Please look hard at (round 4):**
+1. **Q38's one-directional provenance.** Is "no new row is ever old-form" enforced on every write
+   path (ingest, replay, re-stamp, rollback replay)? Is the duplicate the only cost?
+2. **The receipt and barrier.** Can a `log.saved_files` row at (system, file, capture text)
+   exist without this attempt having committed, or be missing when it did? Is the advisory-lock
+   barrier sound if the original backend is still in `COMMIT`, or is idle in transaction after
+   the client died? Does `lock_timeout` + "stays unknown" ever block forever?
+3. **Coverage proof.** Is start − ε > `t1` and end + ε < `c` + 30 min, with no `E` entries,
+   sufficient given that the reader's CT query is one of several in a `Promise.all`? Is ε right?
+4. **Re-stamp by id.** Interaction with the journal, the 3-attempt cap, partition moves, and an
+   alert-processor run that overlaps the re-stamp transaction.
+5. Whether the required additions in §9.8 now test what each finding needed.
+
 ## Round 3 (2026-11-24): the design revised for `REVIEW-PCT1B-PLAN-CODEX-2.md`
 
 Repo `hhm_rpp_philips`, branch `DEV`. The plan revised for round 2 is committed on `DEV`, on top of

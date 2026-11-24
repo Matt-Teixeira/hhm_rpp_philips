@@ -39,8 +39,13 @@
     spooled until committed and saved, the rollback preserves the whole
     published set under the collector's lock, the alert window rests on
     a measured assumption with re-stamp recovery, and NULL time text is
-    an ambiguous class. **Q34–Q37 AGREED 2026-11-24** (as recommended);
-    next is Codex round 3.
+    an ambiguous class. **Q34–Q37 AGREED 2026-11-24** (as recommended).
+    Codex round 3 found 2 P1 and 4 P2 issues (§9.11). Revised again:
+    only old-form time text marks an old row; each attempt has an
+    identity (inserted ids, and its `log.saved_files` row as a receipt
+    in the same transaction); coverage is proved from the reader's run
+    log per attempt, else re-stamped by row id. **Q38–Q40 AGREED
+    2026-11-24** (as recommended); next is Codex round 4.
     The build waits for the review to close;
   - the mapping (PCT-2a): **AGREED 2026-11-20** (§7.7 Q13–Q18, as
     drafted). It becomes `insight/philips_ct/rules.js` in PCT-2;
@@ -942,7 +947,8 @@ real-data equivalence was rerun.
 3 P1 and 6 P2 issues. The design below is revised for them, and **Q27–Q33 (§9.7) were AGREED
 on 2026-11-24, as recommended**. Round 2 (§9.10) found 2 P1 and 5 P2 issues in how those
 answers were to be built; the design is revised again, and **Q34–Q37 (§9.7) were AGREED on
-2026-11-24, as recommended**. Where they change an agreed answer, it is marked as superseded. No code is changed
+2026-11-24, as recommended**. Round 3 (§9.11) found 2 P1 and 4 P2 issues; revised again, and
+**Q38–Q40 (§9.7) were AGREED on 2026-11-24, as recommended**. Where they change an agreed answer, it is marked as superseded. No code is changed
 before 2026-11-24 18:53 UTC (Q3). Everything below was gathered read-only on 2026-11-20: prod DB through `scripts/q.js`, prod files and
 `/home/prod/alert-processor` read, nothing written to the DB, Redis or any file outside the
 evidence folder. Evidence: `~/philips_ct_evidence/pct1b/` (README).
@@ -1042,26 +1048,32 @@ row at the same key in one of two ways:
 
 Each stored row is consumed at most once (a multiset).
 
-**Provenance comes from the row itself, with no stored state (revised for round-2 finding 5,
-Q37).** New rows store `eal_time` / `event_time` as the export's `YYYY-MM-DD HH:MM:SS` (Q28), or
-NULL when the source field is NULL. The MDB columns are nullable (`TIMESTAMP` without `NOT NULL`);
-the copies have 0 NULL. `rows.js` rejects any other time text as a bad record, so a new row is
-always new-form or NULL. A stored row's time text puts it in one of three classes:
-- **old form** `MM/dd/yy HH:mm:ss`: an old-parser row. It can match only the projection (a). All
+**Provenance from the time text, in one direction only (revised for round-3 findings 1 and 3,
+Q38; replaces Q37's ambiguous class).** New rows store `eal_time` / `event_time` as the export's
+`YYYY-MM-DD HH:MM:SS` (Q28), or NULL when the source field is NULL (the MDB columns are nullable;
+the copies have 0 NULL). `rows.js` rejects any other time text as a bad record. So **no new row
+ever has old-form time text**, and that is the only direction rule P relies on:
+- **old form** `MM/dd/yy HH:mm:ss` → an old-parser row, matched only by the projection (a). All
   6,525,121 EAL and 5,097,213 Events rows in `log` today (`out/19`);
-- **new form:** a new-parser row. It can match only the new representation (b);
-- **anything else, NULL included: ambiguous.** It can match (a) or (b). **The old EAL regex can
-  store NULL** (round 2; the earlier claim that it can't was wrong): its `eal_time` capture is
-  `.*?`, so an `Info` containing `","` (exported as `"alpha"",""beta"`) ends the match early, with
-  `info = alpha"` and `eal_time` empty → NULL. Reproduced with the repo's regex. The projection
-  reproduces that row, so (a) still matches it. The Events regex requires a dated `event_time`, so
-  the old parser can't leave an ambiguous Events row.
+- **anything else** (new form, NULL, other text) → treated as a new-parser row, matched only by
+  the exact new representation (b).
 
-An ambiguous stored row suppresses an incoming row only if that row's projection or new form is
-identical to it, so the cost is at most a revision that happens to equal the stored row. Kept:
+**The reverse is not true, and the cost is a duplicate, never a suppression.** The old EAL regex's
+`eal_time` capture is `.*?`, so a quoted field containing a comma shifts or ends the match. Both
+reproduced with the repo's regex: an `Info` containing `","` gives `eal_time` NULL (round 2,
+`out/22`); `File = 'f,part'` with a date-looking `Info` stores that `Info` text, in new form, as
+`eal_time` (round 3). Such an old row is treated as new; the incoming row doesn't match it and is
+**stored again, once, in the new form**. Bound: 0 of 6,525,121 stored EAL rows have non-old-form
+time (`out/19`), and 0 of the 77,264 EAL rows in the copies project to one (`out/23`). Only the old
+parser during a rollback could create one, from a row with a comma inside a quoted field. The
+Events regex requires a dated `event_time`.
+
+What this fixes (round-3 finding 1): a projection can match only an old-form row, so the only
+suppression left is the accepted loss of the old pipeline (below). A new-parser row, NULL time
+included, is matched only by an identical new row, so any revision of it is kept, in any order.
+Kept:
 - no boundary to set, lose or move;
-- it still holds if a rollback lets the old parser store more rows (§9.4), NULL-time EAL rows
-  included.
+- it still holds if a rollback lets the old parser store more rows (§9.4).
 
 **The projection, checked on the copies** (`scripts/legacy_projection.js`, `out/18`):
 - **A. The rebuilt plain record equals the real `mdb-export` record** on every EAL row. For
@@ -1094,7 +1106,8 @@ isn't stored. No such pair exists in the copies.
   copies.
 - **Neither case can be counted** from lossy rows alone (round 2). The ingest logs what it can
   observe, per run and file: rows matched under (a), of which I6 wildcard matches; under (b);
-  ambiguous matches; and rows inserted. The I6 wildcard applies only to an old-form stored row
+  and rows inserted, of which those at a key that already holds a stored row (a revision, or
+  the deliberate duplicate above). The I6 wildcard applies only to an old-form stored row
   whose every other projected column matches; a date-shaped `eal` alone is not enough.
 
 ### 9.4 Switching from `.output` to `.csv`, deploying, and rolling back
@@ -1172,8 +1185,8 @@ isn't stored. No such pair exists in the copies.
   - the `.output` offset keys are no longer read or written, and keep their last values until
     a rollback resets them (above);
   - new keys `<SME>.EALInfo.csv` / `<SME>.Events.csv` hold `{size, sha256}` of the last file
-    **completed** (Q34): committed, its `log.saved_files` insert acknowledged, and, with bad
-    lines, retained. An identical file is skipped only if nothing for it is pending in the
+    **completed** (Q34, Q39): committed (its `log.saved_files` row is in the same
+    transaction), journaled, and, with bad lines, retained. An identical file is skipped only if nothing for it is pending in the
     spool. A lost key means one more diff and no insert.
 - **The `.output` files (Q26, agreed):** the collector keeps writing them and nothing reads them.
   `log.saved_files` stops getting them. After 5 clean days, PCT-C2 removes the legacy exports.
@@ -1191,85 +1204,125 @@ New code under `jobs/Philips/CT/`. The byte-offset path is removed: `eal_parser.
 | `time.js` | **`host_datetime`** from the wall clock and the site zone (`America/New_York` if NULL, as today). The repeated DST hour takes the earlier offset (Q23, agreed). **An invalid zone string** gives `host_datetime` NULL and an ERROR (Q33); the candidate read covers NULL |
 | `ingest.js` | **Per file, one transaction:** see the steps below the table |
 | `spool.js` | **Durable pending work, retention and replay** (Q29, extended by Q34; round-2 findings 2, 6, 7): see below the table |
-| `save.js` | **Archival, awaited:** gzip the spooled bytes and `INSERT` them into `log.saved_files`; awaited, errors propagated (round-2 finding 6). The shared `util/gzip_file.js` doesn't await or return its insert (line 64) and swallows errors, so the CT path doesn't use it. The other Philips jobs keep it (out of scope; `hhm_rpp_ge` fixed its copy on 2026-11-23) |
-| `coverage.js` | **The alert window** (Q31, revised by Q36; round-2 findings 3, 4): the run phase, the deadline, late-commit re-stamp; see below the table |
-| `index.js` | **Per configured file:** missing → silent skip; not `.csv` → WARN. Read the file **once into a buffer** and sha256 it. Unchanged hash and nothing pending → skip. Otherwise **spool it first**, then process the system's pending entries oldest first: validate, ingest, save, retain if needed, complete. Replay entry point: `node index.js PHILIPS_CT_REPLAY <retained file or rollback folder>` |
+| `save.js` | **Archival inside the ingest transaction** (Q39; round-2 finding 6, round-3 finding 2): gzip the spooled bytes and `INSERT` them into `log.saved_files` in the same transaction as the rows, with the attempt's exact capture time. Its key `(system_id, file_name, capture_datetime)` makes it the attempt's **receipt**. The shared `util/gzip_file.js` doesn't await or return its insert (line 64) and swallows errors, so the CT path doesn't use it. The other Philips jobs keep it (out of scope; `hhm_rpp_ge` fixed its copy on 2026-11-23) |
+| `coverage.js` | **The alert window** (Q31 → Q36 → Q40; round-2 findings 3, 4; round-3 findings 4–6): the phase, the deadline, proof from the reader's run log, re-stamp by row id; see below the table |
+| `journal.js` | **Per-attempt journal** (Q40; round-3 finding 5): see `spool.js` below |
+| `index.js` | **Per system:** take the system's spool lock; process its pending spool entries and open coverage obligations **even when the configured file is missing now**. **Per configured file:** missing → silent skip; not `.csv` → WARN. Read the file **once into a buffer** and sha256 it. Unchanged hash and nothing pending → skip. Otherwise **spool it first**, then process the system's pending entries oldest first. Replay entry point: `node index.js PHILIPS_CT_REPLAY <retained file or rollback folder>` |
 
-**`ingest.js`, per file, one transaction:**
-1. **Phase, then lock without waiting:** the run must be inside its phase (`coverage.js`). Then
-   `pg_try_advisory_xact_lock(system, kind)`. If another writer holds it, the entry stays
-   pending for the next run.
-2. **Capture time:** the DB's `clock_timestamp()` when the lock was taken, written to the
-   entry's `state.json` before any insert.
-3. **Candidate read** (finding 4): `system_id = $1 AND (host_datetime within the file's span ±2
-   days OR host_datetime IS NULL) AND host_date = ANY(file dates) AND <kind predicate>`. This is
-   complete for every accepted key: a stored `host_datetime` is either NULL or the raw key read
-   in some IANA zone (−12 h to +14 h, plus a 1 h DST fold). The span comes from the raw keys'
-   wall-clock values, never from the computed `host_datetime`, so an invalid zone (every
+**`ingest.js`, one attempt per spool entry, one transaction (revised for round-3 finding 2,
+Q39):**
+0. **Fencing:** the whole run's work on a system (attempts, outcome checks, journal, re-stamps)
+   holds `flock -n spool/philips_ct/<SME>/.lock`. Cron, manual runs and replays all take it; if
+   it's busy, the system waits for the next run. So one worker owns an entry at a time.
+1. **Attempt identity:** a new uuid, written to the entry's `state.json` as `attempting`
+   before `BEGIN`.
+2. **Lock without waiting:** `pg_try_advisory_xact_lock(system, kind)` is the first statement.
+   If busy, roll back; the entry stays pending.
+3. **Capture time:** `clock_timestamp()::text`, kept as text end to end (microseconds; never a
+   JS `Date`, which node-postgres truncates to milliseconds). It must be inside the phase
+   (`coverage.js`), checked on this exact value; otherwise roll back.
+4. **Candidate read** (round-1 finding 4): `system_id = $1 AND (host_datetime within the file's
+   span ±2 days OR host_datetime IS NULL) AND host_date = ANY(file dates) AND <kind predicate>`.
+   This is complete for every accepted key: a stored `host_datetime` is either NULL or the raw
+   key read in some IANA zone (−12 h to +14 h, plus a 1 h DST fold). The span comes from the raw
+   keys' wall-clock values, never from the computed `host_datetime`, so an invalid zone (every
    incoming `host_datetime` NULL) still bounds the read and finds earlier non-NULL rows.
-4. **Match and insert:** a multiset match under rule P, then inserts in batches of 5,000.
-5. **EAL only:** upsert `alert.offline_hhm_conn` with `GREATEST(stored, newest inserted
-   host_datetime)` (Q32). Then `COMMIT`, then read the DB time and record `committed` in
-   `state.json` (`coverage.js` checks it).
+5. **Match and insert:** a multiset match under rule P, then inserts in batches of 5,000 with
+   `RETURNING id`.
+6. **EAL only:** upsert `alert.offline_hhm_conn` with `GREATEST(stored, newest inserted
+   host_datetime)` (Q32).
+7. **Save** the exact bytes to `log.saved_files` at the capture time (`save.js`): the receipt.
+8. **Before `COMMIT`:** read the DB time `t0` and write `state.json` as `committing` (attempt id,
+   capture text, `t0`, the inserted ids, the EAL ids separately), `fsync`ed. `COMMIT` is only ever
+   sent after this.
+9. **`COMMIT`**, then read the DB time `t1` (the commit's upper bound) and record `committed`.
+
+**An unknown outcome** (an error or lost connection at `COMMIT`, or a crash; the next run finds
+the entry not `committed`):
+- `attempting` → `COMMIT` was never sent, so the transaction can't commit: aborted.
+- `committing` → on a new connection, take `pg_advisory_xact_lock(system, kind)` with
+  `lock_timeout` 10 min. The original transaction took that lock first, so getting it means the
+  original has ended. Only then check the receipt: the `log.saved_files` row at (system, file,
+  exact capture text) exists → **committed**, and every recorded id must exist at that capture
+  time (else ERROR and stop); absent → **aborted**. A committed attempt's `t1` is the DB time
+  when the lock was obtained.
+- The lock times out → still unknown; no new attempt for that entry until it's resolved.
+- Another transaction at the same capture time can't confuse this: the receipt's key includes
+  the file, attempts of one system and kind are serialized by the advisory lock, and rows are
+  identified by id, not by capture time.
 
 - **The kind predicate** is identical in SQL and JS: Events if
   `num_nonnulls(type, level, module, time_stamp, message, eal, event_time) > 0`, else EAL.
 
-**`coverage.js`, the alert window (Q31, revised by Q36; round-2 findings 3 and 4).** A row with
-capture time `c` and commit time `t` is tested iff some alert-processor CT query with snapshot
-`s` has `t < s` and `s − 30 min < c`. The writer can't see `s`, and a timeout can't bound a
-commit: PostgreSQL 14 disables `statement_timeout` before `CommitTransactionCommand()`
-(`postgres.c`, `finish_xact_command`). So the design states an assumption, keeps to a phase in
-which it suffices, recovers when a commit is late, and audits the assumption:
-- **Assumption D:** each alert-processor run's CT query takes its snapshot between its nominal
-  minute N (`:24`, `:54`) and N + 5 min. Measured (`sql/10`, `out/21`; 14 days, 672 runs, 48 a
-  day, none missed): every run *ended* 12–53 s after its minute (median 16 s, p99 37 s), so its
-  queries started earlier still.
-- **Phase:** an ingest (cron, manual or replay) may take its lock only when the DB time is in
-  `[N + 5 min, N_next − 2 min)`: minutes `:29–:52` and `:59–:22`. The cron runs at `:18` and
-  `:48` are inside. Outside it the entry stays pending. Under D, a row captured in the phase and
-  committed before `N_next` is seen by the `N_next` query; Codex's manual run at `:24:10` is
-  refused.
-- **One clock:** every time here is the DB's `clock_timestamp()`, read when needed (the reader's
-  `NOW()` is the DB clock too). The app clock isn't used, so app/DB skew doesn't matter.
+**`coverage.js`, the alert window (Q31 → Q36 → Q40; round-2 findings 3–4, round-3 findings
+4–6).** A row with capture time `c` and commit time `t` is tested iff a **successful**
+alert-processor CT query with snapshot `s` has `t < s` and `s − 30 min < c`. A timeout can't bound
+a commit (PostgreSQL 14 disables `statement_timeout` before `CommitTransactionCommand()`). So
+coverage is **proved per attempt from the reader's run log, and re-stamped when it can't be**:
+- **Proof.** Run R of `alert-processor` in `util.app_run_logs` covers a committed attempt if:
+  - R's start (its first log entry's `dt`, this host's clock; the reader runs on this host) − ε
+    > the attempt's `t1`;
+  - R's end (`inserted_at`, DB clock) + ε < `c` + 30 min;
+  - R has no `E` entry from `onBoot` (its boot batch includes the CT read) or
+    `insertAlertDetections`.
+
+  ε = the host/DB clock offset measured at the start of the run (a `clock_timestamp()` round
+  trip: offset plus round-trip time) + 1 s. If that offset is over 5 s, nothing is proved that run
+  (WARN). Runs are matched by their own start and end, not rounded to a slot.
+- **Resolution,** for each committed attempt that inserted EAL rows (Events rows can't alert:
+  every enabled CT model tests `err_number`, NULL in Events):
+  - **PROVED** → done;
+  - not proved while a reader could still cover it (DB time < `c` + 32 min) → wait;
+  - otherwise **UNPROVED → re-stamp** its EAL rows by id, in a new transaction, in the phase,
+    holding the advisory lock: `UPDATE log.philips_ct_eal_events SET capture_datetime = $new
+    WHERE id = ANY($ids) AND capture_datetime = $old`, both exact text; the row count must equal
+    the id count. `$new` becomes a new obligation for the same ids. At most 3 re-stamps per
+    attempt, then an ERROR for you. A re-stamped row that was in fact seen is tested twice and
+    gives two detections (counted; accepted). `capture_datetime` is the partition key, so across
+    a month boundary the `UPDATE` moves rows between partitions; ids don't change.
+- **Phase,** so that PROVED is the normal outcome: an attempt's (or re-stamp's) capture time must
+  be **strictly** inside `(N + 6 min, N_next − 2 min)`, N the last nominal reader minute: after
+  `:30:00` and before `:52:00`, after `:00:00` and before `:22:00`. Checked on the exact assigned
+  value. The cron runs at `:18` and `:48` are inside. Under assumption D (the CT query snapshot at
+  most 5 min after N) the next reader covers it, with 1 min to spare; D is no longer needed for
+  correctness, since an unproved attempt is re-stamped.
+- **Measured** (round 3, by start time; `sql/11`, `out/24`): 14 days, 672 slots, each with
+  exactly one run, none missed; starts 1.3–2.8 s after the minute; at most 51 s long; 0 boot or
+  detection-insert errors. This host's clock was within about 40 ms of the DB's (2026-11-24).
+  So a `:18` attempt committed by `:20` is proved by the `:24` run. The round-2 study (`sql/10`)
+  rounded runs by their end time and read a field the logger doesn't write (`datetime`, not
+  `dt`); it's superseded.
 - **Deadline, as a resource control only:** before each statement and before `COMMIT`, the run
   reads the DB time and rolls back at `N_next − 60 s` or later. `SET LOCAL statement_timeout` =
-  the time left bounds each statement. Neither bounds the commit itself.
-- **A late or uncertain commit is re-stamped.** After `COMMIT` returns, the run reads the DB time
-  `t1`. The commit is late if `t1 ≥ N_next`. It is uncertain if `COMMIT` errored or the
-  connection was lost; the run (or the next one, from `state.json`) checks on a new connection
-  whether rows with the recorded capture time exist. A late or committed-uncertain entry is
-  marked `restamp_due`. The next run inside the phase, in its own transaction, runs
-  `UPDATE … SET capture_datetime = <its capture time> WHERE system_id = $1 AND capture_datetime =
-  <recorded> AND <EAL kind>`. Only EAL rows: every enabled CT model tests `err_number`, which is
-  NULL in Events. The re-stamp is itself checked the same way. If the first commit was in fact
-  seen, its EAL rows are tested twice and give two detections (counted; accepted).
-  `capture_datetime` is the partition key, so across a month boundary the `UPDATE` moves rows
-  between partitions (PostgreSQL 11+; rehearsed in 1b.2).
-- **Audit:** `tooling/philips_ct_alert_coverage.js` (read-only) compares each CT commit's capture
-  and commit times with the alert-processor runs in `util.app_run_logs` (each run's start ≤
-  snapshot ≤ its end) and lists EAL rows that D doesn't cover. 1b.6 runs it daily. A violation of
-  D is repaired by hand with the same `UPDATE`.
-- **Not changed:** the alert processor. A checkpoint in its reader would remove the assumption,
-  but it's a change to another app, and every log table it reads has the same window (Q36).
+  the time left bounds each statement.
+- **Audit:** `tooling/philips_ct_alert_coverage.js` (read-only) reports the journal: per attempt
+  PROVED (and by which run), RESTAMPED, or open. 1b.6 checks it daily.
+- **Not changed:** the alert processor. A checkpoint in its reader would remove all of this, but
+  it's another app's change, and every log table it reads has the same window.
 
-**`spool.js`, durable pending work, retention and replay (Q29, extended by Q34; round-2 findings
-2, 6, 7).** The collector replaces each file every grab, and the buffer resets. So a changed
-snapshot is copied to local disk before anything can fail, and stays there until every
-obligation is acknowledged:
+**`spool.js` and `journal.js`, durable pending work, the journal, retention and replay (Q29 →
+Q34 → Q39/Q40; round-2 findings 2, 6, 7; round-3 finding 5).** The collector replaces each file
+every grab, and the buffer resets. So a changed snapshot is copied to local disk before anything
+can fail, and stays there until its obligations are met:
 - **Spool:** the buffer goes to `spool/philips_ct/<SME>/<file>/<utc>_<sha12>` in the app
-  directory (gitignored): temp name, `fsync`, rename, `fsync` the folder. A `state.json` beside it
-  moves `spooled` → `committed` (capture and commit times) → `saved` → done, each write atomic in
-  the same way. An identical sha256 already pending isn't written again.
+  directory (gitignored): temp name, `fsync`, rename, `fsync` the folder. Its `state.json` moves
+  `spooled` → `attempting` → `committing` → `committed` → `journaled`, each write atomic and
+  `fsync`ed the same way. An identical sha256 already pending isn't written again.
 - **Processing:** each run takes a system's pending entries oldest first. Rule P's multiset
   match makes any order and any repeat idempotent: a repeat inserts nothing, and an older
   snapshot after a newer one inserts only rows really missing (a revision is kept, Q6).
-- **Completion:** an entry is done when its transaction has committed **and** its
-  `log.saved_files` insert is acknowledged, and, with bad lines, its retention is written. Only
-  then is the done-hash set and the spool copy deleted (`log.saved_files` now holds the exact
-  bytes). A commit with a failed save stays pending: the next run's diff inserts nothing and the
-  save is retried. A death between the save and its state write can save one snapshot twice
-  (harmless, counted).
+- **The journal:** `journal/philips_ct/<yyyy-mm>.jsonl`, append-only, `fsync`ed per record. One
+  record per committed attempt: attempt id, system, file, sha256, row counts, the EAL ids, the
+  capture text, `t0`, `t1`. Then its coverage events: proved (which run), re-stamped (old → new
+  capture), each its own record. Coverage obligations are read from the journal, never from
+  the spool. Kept 90 days (the audit horizon); older months are removed by hand and counted in
+  capacity.
+- **Completion:** an entry is done when its attempt has committed (rows and receipt in one
+  transaction), its journal record is durable, and, with bad lines, its retention is written.
+  Only then is the done-hash set and the spool copy deleted. A journal write that fails leaves
+  the entry `committed`; the next run retries the journal write, not the ingest. Coverage stays
+  open in the journal after the spool entry is gone, so a late commit, a re-stamp due, or an
+  unproved attempt found later is still handled.
 - **What it covers** (finding 2): a deadline rollback, a failed batch, a missing partition, a
   busy lock, a phase skip, a crash at any step, with the original replaced in the meantime.
 - **Bad input (Q29, as agreed):**
@@ -1279,17 +1332,18 @@ obligation is acknowledged:
   - a wrong header, or more than max(10, ⌊1% of data lines⌋) bad lines, is a format change:
     nothing is ingested. Data lines are the physical lines after the header, not counting one
     final empty line (so 11 bad lines of 1,000 reject the file, and 10 don't; 11 of 1,100 don't;
-    12 of 1,100 do). The bytes are saved to `log.saved_files` and moved to `retained/` with
+    12 of 1,100 do). The bytes are saved to `log.saved_files` (an attempt with no rows) and moved to `retained/` with
     `reasons.json`; an ERROR is logged every run, and the done-hash isn't set (a separate
     "seen" hash stops the same bytes being retained twice).
 - **Replay:** `PHILIPS_CT_REPLAY` ingests a retained file or a rollback folder (§9.4) through the
   same path. A fully replayed file moves to `replayed/`. Retained and replayed files are never
   deleted automatically (Q29).
-- **A failed spool write** (ENOSPC, permissions): the run still tries ingest and save from
-  memory. The file is done only if both succeed and it has no bad lines; otherwise no done-hash,
-  and an ERROR names the snapshot as **unspooled**: it is lost if the collector replaces it
-  before a later run succeeds.
-- **Capacity (finding 7):** every run measures `spool/`, `retained/` and `replayed/` (bytes,
+- **A failed spool write** (ENOSPC, permissions): the run still tries the attempt from memory
+  (rows and receipt in one transaction). The file is done only if it commits, has no bad lines,
+  and its journal record is written; otherwise no done-hash, and an ERROR names the snapshot as
+  **unspooled**: it is lost if the collector replaces it before a later run succeeds, unless the
+  attempt committed (then `log.saved_files` holds it).
+- **Capacity (finding 7):** every run measures `spool/`, `retained/`, `replayed/` and `journal/` (bytes,
   count, oldest pending). WARN at 1 GB in total or a pending entry older than 6 h; ERROR at 5 GB
   or 24 h. The owner is you, and the response is in 1b.6. For scale: a file that keeps failing is
   retained at every changed grab, up to about 160 MB a day at 3.3 MB; the volume has 1.1 TB free
@@ -1387,7 +1441,7 @@ review, as marked:
 
 **Round 3, after design review round 2: AGREED 2026-11-24** (your answers, as recommended):
 
-34. **Pending work and archival. Recommendation: spool every changed snapshot to local disk
+34. *(The separate save is replaced by Q39: the save is inside the ingest transaction.)* **Pending work and archival. Recommendation: spool every changed snapshot to local disk
     first, and keep it until committed and saved (§9.5 `spool.js`).** Extends Q29 from bad input to
     all input. The done-hash follows only a complete entry; the save is awaited; a completed
     entry's local copy is deleted, because `log.saved_files` holds the bytes; WARN/ERROR
@@ -1401,7 +1455,7 @@ review, as marked:
     re-export of the preserved `Logger.mdb`, or a rebuild from a completed `.csv`, byte-equal).
     Otherwise it stops for that system and you decide. Not chosen: printed commands run later (a
     publish in between makes them refer to different files).
-36. **The alert window. Recommendation: assumption D (reader delay ≤ 5 min; measured ≤ 53 s), a
+36. *(Revised by Q40: re-stamp whenever coverage isn't proved.)* **The alert window. Recommendation: assumption D (reader delay ≤ 5 min; measured ≤ 53 s), a
     run phase on the DB clock, the deadline as a resource control, re-stamping the EAL rows of a
     late or uncertain commit, and a read-only audit (§9.5 `coverage.js`).** Changes Q31, which
     claimed a guarantee a timeout can't give. Cost: a rare double detection when an uncertain
@@ -1409,24 +1463,47 @@ review, as marked:
     Not chosen for PCT-1b: a checkpoint in the alert processor. It removes the assumption, but
     it's another app's change, and every log table it reads has the same window. Worth its own
     ticket.
-37. **Rows with NULL or unrecognised time text. Recommendation: an "ambiguous" class that can
+37. ~~Ambiguous class.~~ **Superseded by Q38** (round-3 finding 1: it suppressed a new revision). **Rows with NULL or unrecognised time text. Recommendation: an "ambiguous" class that can
     match either form (§9.3).** New rows are only ever new-form or NULL (validated). Not chosen:
     treating every non-old-form row as new (the old EAL regex can store NULL, so such rows
     would be duplicated after a rollback), or a marker column (a schema change PCT-1b doesn't
     make).
+
+**Round 4, after design review round 3: AGREED 2026-11-24** (your answers, as recommended):
+
+38. **Provenance. Recommendation: only old-form time text marks an old-parser row; everything
+    else is matched as new (§9.3).** Replaces Q37. A new row can never be old-form (validated),
+    so a projection can only match an old-form row, and a new revision is never suppressed. Cost:
+    an old EAL row whose regex capture was shifted by a comma in a quoted field (NULL or
+    date-looking `eal_time`) is stored again once, in the new form. 0 such rows stored today, 0
+    in the copies; only a rollback could create one. Not chosen: keeping Q37 (finding 1); a
+    marker column (exact, but a schema change to an 11.6M-row table and its archive tables).
+39. **Commit identity. Recommendation: each attempt has an id; its inserted ids are written to
+    disk before `COMMIT`; its `log.saved_files` row, in the same transaction, is its receipt;
+    an unknown outcome is decided only after taking the same advisory lock; a per-system spool
+    lock fences workers (§9.5 `ingest.js`).** Changes Q34: the save is no longer a separate
+    step, so it can't fail after the rows commit. Not chosen: capture time as identity (finding
+    2); a new receipts table (a schema change, and `log.saved_files`'s key already fits).
+40. **Coverage. Recommendation: proved per attempt from the reader's run log, else re-stamped by
+    row id (at most 3 times), a strict phase, and a 90-day local journal (§9.5 `coverage.js`,
+    `journal.js`).** Changes Q36: re-stamp whenever coverage isn't proved, not only when a
+    commit is late; assumption D is no longer needed for correctness. Cost: an attempt that was
+    seen but can't be proved is tested twice. On 14 days of logs every slot had exactly one
+    successful run 1.3–2.8 s after its minute, so a normal `:18` / `:48` attempt is proved by
+    the next run. Not chosen: an audit that only reports, with manual repair (finding 6).
 
 ### 9.8 Steps and exit criteria
 
 | Step | Content | Exit | Earliest |
 |---|---|---|---|
 | **1b.0 Plan** | this section | Q19–Q26 AGREED | **done 2026-11-20** |
-| **1b.0r Design review** | round 1: `REVIEW-PCT1B-PLAN-CODEX.md` (3 P1, 6 P2), answered in §9.9. Round 2: `REVIEW-PCT1B-PLAN-CODEX-2.md` (2 P1, 5 P2), answered in §9.10. Round 3: the updated handoff → `REVIEW-PCT1B-PLAN-CODEX-3.md` | no open P1/P2; Q27–Q33 AGREED (**done 2026-11-24**); Q34–Q37 AGREED (**done 2026-11-24**) | now |
-| **1b.1 Build** | `csv.js`, `rows.js`, `legacy.js`, `time.js`, `ingest.js`, `spool.js`, `save.js`, `coverage.js`, `index.js`, `tooling/philips_ct_rollback.js`, `tooling/philips_ct_alert_coverage.js`; masked fixtures; `node --test` | **Decoder:** literal backslashes, `\\n` vs `\n`, doubled quotes, CRLF, tabs, adjacent escapes, a trailing lone backslash, empty vs NULL, non-ASCII, a bad-quote line. **Rows:** header, field count, key format, impossible dates, all-NULL Events payload, kind round-trip, Q28 text. **Legacy oracle** (finding 6): the projection against the **actual old regexes and helpers** on synthetic doubled quotes in `Info`, `File` and `ErrNum`, tabs, backslashes, Unicode whitespace, empty vs NULL, the I6 merge. **Transition identity** (finding 1): old split A → same A → changed B at the same key over separate snapshots; reset and clock reversal; a nonstandard `EAL` value; old and new candidates together; duplicate stored rows; order permutations. Assert which rows are inserted, not just totals. **Time:** DST both ways, NULL and invalid zones. **Provenance** (round 2, addition 5): `Info` containing `","`; NULL source `EalTime` / `EventTime`; unrecognised time text; rows the old parser stores during a rollback; an invalid zone with every incoming `host_datetime` NULL (the span from raw keys finds earlier non-NULL rows). **Whole-pipeline oracle** (addition 7): the old collector's shell steps (the pre-PCT-C script, `sort` under the cron environment's locale) and the old parser's whole-file `/g` scan over sequential snapshots, against the per-row projection: byte tails starting inside a record, I6 consuming the next timestamp, an I6 record at EOF, changed adjacency between grabs. **Thresholds** (addition 6): 10 and 11 bad lines; 1% and one above on 999, 1,000, 1,001 and 1,100 lines. **Phase and deadline:** pure functions of DB time, both reader minutes, hour and day boundaries. **Spool state machine:** every transition and every crash point, with a fake filesystem that fails each write. Each test is checked to fail under a matching mutation. No network, no real DB, every child process bounded | after 2026-11-24 18:53 UTC, once you confirm the cutover closed |
-| **1b.2 Exactness and rehearsal** | throwaway PostgreSQL 14 (local `initdb`, socket only) with the real DDL: monthly partitions including a month boundary, the indexes, `alert.offline_hhm_conn`; the real parser code and SQL | **DB = MDB** for each copy on an empty DB, both tables: the multiset of (key, content) equals an independent reference (plain `mdb-export` → Python) under Q28/R2 text, including suffixed, comma, multi-line and the 43 `Series … cancelled` rows. **Re-run, Redis cleared:** 0 inserted. **Reset** (half a buffer, then the full one, then a disjoint one): 0 duplicates. **Production-shaped seed** (finding 7): only `log`-eligible old rows from `sql/05`, with their real capture times; inserts = **113,552** in total, matching the per-copy table in §9.3, with their identities checked. Then a repeat, a Redis loss and a changed snapshot. **Candidate SQL** (finding 4): stored NULL `host_datetime`, a zone change of 26 h, a suffixed key: each inserted row visible to its next read. **Transactions** (required addition 5): two connections on one file; a failure in a later batch; a kill before commit, after commit but before Redis, and after Redis but before the save; the deadline expiring; reader visibility at a simulated `:24`. **Pending work** (round 2, additions 2 and 6): a deadline rollback, a missing partition, a late-batch failure and a busy lock, each followed by a source reset with the original replaced: the exact accepted identities recovered from the spool; a crash after a partial ingest but before retention or the hash; a save failure, and a death after Redis but before the save, with the original replaced: `log.saved_files` ends with the exact bytes and the entry's state is right; ENOSPC, a permission failure and a death during a spool or retention write: the artifact and `reasons.json` recoverable, no done-hash. Assert bytes and states, not just row counts. **Retention:** a bad line among good ones; repeated failure, then the buffer replaced; a bad header; replay after the original is gone; capacity WARN/ERROR. **Alert coverage** (additions 3 and 4): a slow `COMMIT` (a test-only deferred constraint trigger that sleeps at commit time), a client pause between statements, a lost commit acknowledgment (the backend killed during `COMMIT`), runs outside the phase (Codex's `:24:10` timeline is refused), a simulated reader query at N + d for several d: every committed EAL row is either seen by a reader query or re-stamped and then seen; the re-stamp across a month boundary. **Rollback matrix** (finding 1, addition 1): the collector stopped after each of its five renames, and two consecutive partial publishes; files replaced between `check` and `apply`; a grab holding the lock; the copies verified before any offset changes; then the originals deleted and every row recovered from the preserved set by replay. `UNCOVERED` leaves the offset unchanged; a message alone isn't a pass. Offset ordering; redeploy with existing hashes. Measured: the first full-buffer write and the lock behaviour | after 1b.1 |
+| **1b.0r Design review** | round 1: `REVIEW-PCT1B-PLAN-CODEX.md` (3 P1, 6 P2), answered in §9.9. Round 2: `REVIEW-PCT1B-PLAN-CODEX-2.md` (2 P1, 5 P2), answered in §9.10. Round 3: `REVIEW-PCT1B-PLAN-CODEX-3.md` (2 P1, 4 P2), answered in §9.11. Round 4: the updated handoff → `REVIEW-PCT1B-PLAN-CODEX-4.md` | no open P1/P2; Q27–Q37 AGREED (**done 2026-11-24**); Q38–Q40 AGREED (**done 2026-11-24**) | now |
+| **1b.1 Build** | `csv.js`, `rows.js`, `legacy.js`, `time.js`, `ingest.js`, `spool.js`, `save.js`, `coverage.js`, `journal.js`, `index.js`, `tooling/philips_ct_rollback.js`, `tooling/philips_ct_alert_coverage.js`; masked fixtures; `node --test` | **Decoder:** literal backslashes, `\\n` vs `\n`, doubled quotes, CRLF, tabs, adjacent escapes, a trailing lone backslash, empty vs NULL, non-ASCII, a bad-quote line. **Rows:** header, field count, key format, impossible dates, all-NULL Events payload, kind round-trip, Q28 text. **Legacy oracle** (finding 6): the projection against the **actual old regexes and helpers** on synthetic doubled quotes in `Info`, `File` and `ErrNum`, tabs, backslashes, Unicode whitespace, empty vs NULL, the I6 merge. **Transition identity** (finding 1): old split A → same A → changed B at the same key over separate snapshots; reset and clock reversal; a nonstandard `EAL` value; old and new candidates together; duplicate stored rows; order permutations. Assert which rows are inserted, not just totals. **Time:** DST both ways, NULL and invalid zones. **Provenance** (round 2, addition 5; round 3, additions 1–2): `Info` containing `","`; NULL source `EalTime` / `EventTime`; unrecognised time text; rows the old parser stores during a rollback; **the new-only A/B pair** (A: `Info` `alpha"`, NULL time; B: `alpha","beta`, a time) in both orders, an older replay after the newer grab, a Redis loss, repeats and a rollback interval, asserting the stored contents (both A and B kept); **comma-shifted old EAL rows** (`File` or `ErrNum` with a comma, a date-looking later field) through the real old helper and whole-file scan, stored once more in new form, counted; old/new syntax tested as a property, not trusted from a fixture label; an invalid zone with every incoming `host_datetime` NULL (the span from raw keys finds earlier non-NULL rows). **Whole-pipeline oracle** (addition 7): the old collector's shell steps (the pre-PCT-C script, `sort` under the cron environment's locale) and the old parser's whole-file `/g` scan over sequential snapshots, against the per-row projection: byte tails starting inside a record, I6 consuming the next timestamp, an I6 record at EOF, changed adjacency between grabs. **Thresholds** (addition 6): 10 and 11 bad lines; 1% and one above on 999, 1,000, 1,001 and 1,100 lines. **Phase and deadline** (round 3, addition 4): pure functions of the exact capture text: `N + 6 min` exactly, 1 µs before and after, both reader minutes, hour and day boundaries, the same for re-stamps; capture text round-trips without loss. **Coverage proof** (addition 6): fixtures for a run 30 min late, a missed slot, a duplicate slot, missing `dt` or `inserted_at`, clock offset over 5 s, a boot-batch failure and a detection-insert failure: PROVED only where the conditions hold, otherwise UNPROVED. **Spool state machine:** every transition and every crash point, with a fake filesystem that fails each write; two workers on one system (the spool lock); pending entries processed while the configured file is missing (addition 5); a journal write failure retried without a new attempt. Each test is checked to fail under a matching mutation. No network, no real DB, every child process bounded | after 2026-11-24 18:53 UTC, once you confirm the cutover closed |
+| **1b.2 Exactness and rehearsal** | throwaway PostgreSQL 14 (local `initdb`, socket only) with the real DDL: monthly partitions including a month boundary, the indexes, `alert.offline_hhm_conn`; the real parser code and SQL | **DB = MDB** for each copy on an empty DB, both tables: the multiset of (key, content) equals an independent reference (plain `mdb-export` → Python) under Q28/R2 text, including suffixed, comma, multi-line and the 43 `Series … cancelled` rows. **Re-run, Redis cleared:** 0 inserted. **Reset** (half a buffer, then the full one, then a disjoint one): 0 duplicates. **Production-shaped seed** (finding 7): only `log`-eligible old rows from `sql/05`, with their real capture times; inserts = **113,552** in total, matching the per-copy table in §9.3, with their identities checked. Then a repeat, a Redis loss and a changed snapshot. **Candidate SQL** (finding 4): stored NULL `host_datetime`, a zone change of 26 h, a suffixed key: each inserted row visible to its next read. **Transactions** (required addition 5): two connections on one file; a failure in a later batch; a kill before commit, after commit but before Redis, and after Redis but before the save; the deadline expiring; reader visibility at a simulated `:24`. **Pending work** (round 2, additions 2 and 6): a deadline rollback, a missing partition, a late-batch failure and a busy lock, each followed by a source reset with the original replaced: the exact accepted identities recovered from the spool; a crash after a partial ingest but before retention or the hash; a failing in-transaction save (the whole attempt rolls back), and a death after `COMMIT` but before the journal write, with the original replaced: `log.saved_files` ends with the exact bytes once and the entry's state is right; ENOSPC, a permission failure and a death during a spool or retention write (addition 7): no done-hash, a visible **unspooled** ERROR, and recovery only where a durable copy exists (the spool, `retained/`, or the attempt's `log.saved_files` row if it committed). Assert bytes and states, not just row counts. **Commit reconciliation** (round 3, addition 3): another transaction's rows at the same capture time, the other kind at the same time; a check while the original `COMMIT` is still running (a test-only deferred constraint trigger that sleeps at commit; the barrier waits for it); committed with the response lost (the trigger sleeps, the client drops its socket, the server completes the commit) versus aborted (the backend terminated before `COMMIT`): assert exactly which rows are acknowledged and re-stamped. **Completion** (addition 5): late commit → journal → spool deleted → restart: the re-stamp still happens; an unproved attempt discovered after cleanup; a re-stamp failing 3 times → ERROR. **Retention:** a bad line among good ones; repeated failure, then the buffer replaced; a bad header; replay after the original is gone; capacity WARN/ERROR. **Alert coverage** (additions 3 and 4): a slow `COMMIT` (a test-only deferred constraint trigger that sleeps at commit time), a client pause between statements, a lost commit acknowledgment (the backend killed during `COMMIT`), runs outside the phase (Codex's `:24:10` timeline is refused), a simulated reader query at N + d for several d, including both ends of D: every committed EAL row is either proved seen by a reader query or re-stamped and then proved; the re-stamp across a month boundary, the ids unchanged. **Rollback matrix** (finding 1, addition 1): the collector stopped after each of its five renames, and two consecutive partial publishes; files replaced between `check` and `apply`; a grab holding the lock; the copies verified before any offset changes; then the originals deleted and every row recovered from the preserved set by replay. `UNCOVERED` leaves the offset unchanged; a message alone isn't a pass. Offset ordering; redeploy with existing hashes. Measured: the first full-buffer write and the lock behaviour | after 1b.1 |
 | **1b.3 DRY_RUN** | `DRY_RUN=1` from the dev checkout against prod (read-only sessions) | (a) prod's files as they are: every CT file skipped silently, 0 writes, 0 CT errors. (b) `DEV_FILE_PATH` → the copies' `.csv` for SME20598 / SME18534 / SME18535: the planned inserts equal the "`log` only" rule-P counts (SME20598: 15,197 Events, 0 EAL; SME18534: 623 Events, 0 EAL; SME18535: 14,055 Events, 2 EAL, the revised rows) against the real stored rows, run time recorded. The parity check doesn't apply: `hhm_rpp` no longer runs CT, and MDB is the reference | after 1b.2 |
 | **1b.4 Code review** | `REVIEW-PCT1B-PARSER-HANDOFF.md` → Codex → `REVIEW-PCT1B-PARSER-CODEX.md`; fixes recorded here | the review closed; then commit with your OK | after 1b.3 |
 | **1b.5 Deploy** (you) | confirm `crontab -l` has no `hhm_rpp … philips_ct` line; the 2026-12 partition if it's December; promote `DEV` → `STAGING` → `PROD`; the drain (§9.4); pull; the `config.log` `UPDATE`; watch the next run | the first run: `PHILIPS_CT` warn/error 56 → 0 (all files missing, silent), nothing inserted | after 1b.4 |
-| **1b.6 Monitor** | 5 clean days; and once a CT system is reachable, its first `.csv` grab | 5 clean days of runs: the spool empty after every run, no retained files, no capacity WARN, the daily coverage audit clean. A capacity WARN/ERROR: you read `reasons.json`, fix or replay, and move old retained files elsewhere by hand. **On the first live capture:** DB = that grab's `Logger.mdb` (keys and content, both tables); 0 duplicates on the following runs; the coverage audit shows the next alert-processor run tested the new EAL rows; its run time recorded against the days before. Close-out needs the live capture (§6), so it waits on reachability (§8.1) | after 1b.5 |
+| **1b.6 Monitor** | 5 clean days; and once a CT system is reachable, its first `.csv` grab | 5 clean days of runs: the spool empty after every run, no retained files, no capacity WARN, no coverage obligation open more than 1 h, re-stamps counted (expected 0). A capacity WARN/ERROR: you read `reasons.json`, fix or replay, and move old retained files elsewhere by hand. **On the first live capture:** DB = that grab's `Logger.mdb` (keys and content, both tables); 0 duplicates on the following runs; the journal shows the new EAL rows PROVED by the next alert-processor run; its run time recorded against the days before. Close-out needs the live capture (§6), so it waits on reachability (§8.1) | after 1b.5 |
 
 ### 9.9 Design review round 1 (Codex, 2026-11-20): what changed
 
@@ -1465,3 +1542,20 @@ policy and a hash after a partial ingest reasonable once retention is durable an
 
 All 7 required additions to 1b.1/1b.2 are in §9.8. Also corrected: the round-2 handoff called the
 plan uncommitted; it was committed as `a3b3a75`.
+
+### 9.11 Design review round 3 (Codex, 2026-11-24): what changed
+
+Review: `REVIEW-PCT1B-PLAN-CODEX-3.md`. Verdict: revise before building. Codex found the
+coverage condition (`t < s`, `s − 30 min < c`) right, and the locked rollback, preservation and
+spool sound for what they cover.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 P1 | The ambiguous class lets the projection of a new revision B suppress a new NULL-time row A; A → B → A → B stores only A | **Agreed.** Q38: only old-form time marks an old row; new rows, NULL included, match exactly. A and B are both kept in any order (§9.3) |
+| 2 P1 | Rows at a capture time don't prove which transaction committed (another attempt at the same time; a `COMMIT` still running; ms truncation in node-postgres) | **Agreed.** Q39: attempt id; inserted ids `fsync`ed before `COMMIT`; the `log.saved_files` row in the same transaction is the receipt; the outcome is decided only after the advisory-lock barrier; capture time kept as text; a per-system spool lock (§9.5 `ingest.js`) |
+| 3 P2 | An old EAL row can have new-form time (a comma in `File` shifts the capture) | **Agreed; reproduced.** Under Q38 such a row is matched as new, so the cost is one deliberate duplicate, bounded: 0 stored, 0 in the copies (`out/19`, `out/23`) |
+| 4 P2 | `c = N + 5 min` exactly fails the strict reader predicate | **Agreed.** Strict phase `(N + 6 min, N_next − 2 min)` on the exact capture text, re-stamps included (§9.5) |
+| 5 P2 | Spool completion can delete outstanding coverage work and its only record | **Agreed.** A 90-day journal holds each committed attempt and its coverage events; coverage is read from the journal; the spool entry is deleted only after its journal record is durable (§9.5) |
+| 6 P2 | The timing study rounded runs by end time and read a field the logger doesn't write; run-log rows exist for failed runs | **Agreed.** Redone by start time (`sql/11`, `out/24`): 672 of 672 slots, one run each, 1.3–2.8 s after the minute, 0 failures. Coverage is now proved per attempt from successful runs (start − ε > `t1`, end + ε < `c` + 30 min), else re-stamped (Q40) |
+
+All 7 required additions are in §9.8 (1b.1 and 1b.2).
