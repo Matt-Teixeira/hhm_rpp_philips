@@ -1,6 +1,6 @@
 # Philips CT Insights — plan
 
-**Current state (2026-11-20; read this first):**
+**Current state (2026-11-24; read this first):**
 - **PCT-0 (decide): done. All 12 §5 recommendations AGREED on
   2026-11-20**, as written (§5). The evidence below is read-only and was
   gathered against prod on 2026-11-20. Nothing was written to the DB,
@@ -15,20 +15,26 @@
   `hhm_rpp_philips` since 2026-11-19 18:53 UTC. Each job's first run
   there started after its last `hhm_rpp` run had ended, so no job ran in
   both apps at once (§1.1). No parser change until it closes out (§5 Q3).
-- **Freeze:** `hhm_rpp_ge` stays read-only until the GE MRI close-out
-  (after the 2026-11-23 21:25 UTC check). The schema and C1-Philips work
-  there (§4) waits for it.
+- **GE MRI close-out: done 2026-11-23** (`hhm_rpp_ge` MRI-5). The schema
+  and C1-Philips work there (§4) still waits for PCT-C to show data.
+- **Rechecked 2026-11-24 14:40 UTC:** all 9 CTs still time out (288 of
+  288 runs in 3 days each); no CT row since 2026-11-02. The cutover is
+  still clean (`PHILIPS_CT` 56 warn/error on every run; `hhm_rpp` has run
+  no Philips job since 2026-11-19 18:50).
 - **Next (§6):**
   - the collector session (PCT-C, §8): the export fix passed 5 Codex
     rounds, was promoted, and has been deployed to prod since 2026-11-20
     19:26 UTC. The legacy `.output` files are unchanged, with complete
     `.csv` files next to them. Reachability is still down; that is network
     work (§8.1);
-  - **the parser fix (PCT-1b, §9): plan AGREED 2026-11-20** (Q19–Q26,
-    as recommended): the stateless transition rule O2s (0 duplicate
-    Events rows and no never-stored row lost on the 5 copies), R2 text,
-    then a `config.log` switch to `.csv` that you run after the code
-    deploy. Build from 2026-11-24 18:53 UTC;
+  - **the parser fix (PCT-1b, §9):** Q19–Q26 were AGREED 2026-11-20.
+    Then Codex's design review (round 1) found 3 P1 and 6 P2 issues, all
+    accepted (§9.9). The revised design replaces O2s with rule P, which
+    projects new rows through the old pipeline and reproduces 117,270 of
+    117,274 stored rows. It adds durable retention of bad input, a
+    deploy drain, a reconciled rollback and a commit deadline before the
+    alert processor runs. **Q27–Q33 AGREED 2026-11-24** (as recommended);
+    next is Codex round 2. Build from 2026-11-24 18:53 UTC;
   - the mapping (PCT-2a): **AGREED 2026-11-20** (§7.7 Q13–Q18, as
     drafted). It becomes `insight/philips_ct/rules.js` in PCT-2;
   - the parser fix (PCT-1b) is built after 2026-11-24 18:53 UTC (Q3) and
@@ -925,9 +931,10 @@ real-data equivalence was rerun.
 
 ## 9. PCT-1b: the parser fix (planning started 2026-11-20; read-only so far)
 
-**Status:** plan AGREED 2026-11-20 (Q19–Q26, §9.7). No code is changed before 2026-11-24
-18:53 UTC (Q3). Everything below was
-gathered read-only on 2026-11-20: prod DB through `scripts/q.js`, prod files and
+**Status:** Q19–Q26 were AGREED on 2026-11-20. Then Codex's design review (round 1, §9.9) found
+3 P1 and 6 P2 issues. The design below is revised for them, and **Q27–Q33 (§9.7) were AGREED
+on 2026-11-24, as recommended**. Where they change an agreed answer, it is marked as superseded. No code is changed
+before 2026-11-24 18:53 UTC (Q3). Everything below was gathered read-only on 2026-11-20: prod DB through `scripts/q.js`, prod files and
 `/home/prod/alert-processor` read, nothing written to the DB, Redis or any file outside the
 evidence folder. Evidence: `~/philips_ct_evidence/pct1b/` (README).
 
@@ -960,9 +967,16 @@ first, then one left-to-right unescape pass) reads them as follows:
 - **Table order is not time order.** The time steps back up to 20 h between consecutive rows
   (`out/15_table_order.txt`). So file order can't be used to tell the two passes
   of the DST hour apart (§9.5).
-- **No unique index in `Logger.mdb`.** `mdb-schema` shows none. Keys were unique in all 5 copies,
-  but no copy spans a DST fall-back. The repeated hour could put the same key twice in one file,
-  so dedupe counts rows (a multiset) and doesn't assume unique keys.
+- **Keys are primary keys in `Logger.mdb`** (corrected after review round 1, finding 9).
+  `mdb-schema <copy> postgres` shows `PRIMARY KEY (DTime)` on `EALInfo`, `PRIMARY KEY (DataTime)`
+  on `Events`, and an `EALInfo.DTime → Events.DataTime` foreign key, on all 5 copies
+  (`out/17_mdb_schema_keys.txt`). The default `mdb-schema` output doesn't show them.
+  - So a key can't repeat within one file.
+  - It can repeat **across snapshots**: the DST fall-back hour, a reset, or a clock change. What
+    the scanner does on the second pass of a repeated hour is unknown (a suffix, a rejected
+    insert, or something else), and no copy covers one.
+  - Dedupe still counts rows (a multiset), because stored history can hold duplicates. The DST
+    tests use sequential snapshots.
 
 ### 9.2 Who reads `log.philips_ct_eal_events` (inventory, 2026-11-20)
 
@@ -971,9 +985,9 @@ Sources: the catalog, `pg_stat_statements` since 2026-10-23, a code search of `~
 
 | Reader | What it reads | What PCT-1b changes for it |
 |---|---|---|
-| **alert-processor** (prod cron `24,54`; 1,373 calls) | `SELECT *` of rows with `capture_datetime` in the last 30 min, for `process_log` systems. It tests each row against the system's enabled models: 13 per collected system, all `err_number contains` (27,624 rows, 14,322 enabled) | **Matching: nothing.** Events rows have `err_number` NULL before and after, so they never match. **Volume:** each Events row is still tested and logged as untested (a WARN per model). Events rows per run grow about 2.2× (27,824 vs 12,627 in SME20598's window), so CT rows per run grow about 45%. **Timing:** the CT run must finish before `:24`, or its rows fall outside the next 30-min window. Budget: under 5 minutes (measured: under 1 minute, §9.6) |
+| **alert-processor** (prod cron `24,54`; 1,373 calls) | `SELECT *` of rows with `capture_datetime` in the last 30 min, for `process_log` systems. It tests each row against the system's enabled models: 13 per collected system, all `err_number contains` (27,624 rows, 14,322 enabled) | **Matching: nothing.** Events rows have `err_number` NULL before and after, so they never match. **Volume:** each Events row is still tested and logged as untested (a WARN per model). Events rows per run grow about 2.2× (27,824 vs 12,627 in SME20598's window), so CT rows per run grow about 45%. **Timing:** a CT transaction must commit before the alert processor starts at `:24`, or its rows fall outside the next 30-min window and are never tested. Enforced by a deadline, not just a budget (Q31, §9.5) |
 | `log.log_recent_files` view | the newest `host_datetime` per system | nothing, except that `host_datetime` in the DST hour becomes deterministic (§9.5) |
-| `alert.offline_hhm_conn` | upserted by the EAL ingest with the newest `host_datetime` | same meaning: the newest `host_datetime` among EAL rows inserted in the run, and no upsert when nothing new arrives |
+| `alert.offline_hhm_conn` | upserted by the EAL ingest with the newest `host_datetime` | same meaning, made robust (Q32): upserted in the same transaction as the EAL insert, and never moved backwards (`GREATEST`), so a replay or an older backlog can't make a system look offline |
 | archive job (`fse_dispatch` `archive-partitions.sql`) | moves whole partitions | nothing |
 | the insight layer (PCT-2, future) | `message` whole and the real `eal` flag | what Q4 wants. Events are used from the deploy onward (Q5) |
 
@@ -985,67 +999,95 @@ Sources: the catalog, `pg_stat_statements` since 2026-10-23, a code search of `~
 
 ### 9.3 The transition from old-parser rows (the big question)
 
-**The problem, measured.** For every key window of the 5 copies, I fetched what the old parser
-stored (`sql/05`; `log` for the 3 recent systems, `archive_log` for the two 2025 copies).
-That is 117,274 rows. Every one of them is in its copy (0 stored-only keys). Then I counted what
-each option would insert (`scripts/transition.py`, `transition_shape.py`; `out/07`, `out/13`).
+**The problem.** The DB holds 11.6M rows from the old parser (`out/19`). Its Events rows have
+`Msg` split: the first word in `message`, the rest in `eal`. A whole-file `.csv` parse reads rows
+the old parser already stored, in a different shape. Plain key+content dedupe would store them
+twice.
 
-Text form "R2" below means: `eal_time` / `event_time` in the old `MM/dd/yy HH:mm:ss` text and
-`Info` right-trimmed (Q20).
+**Round 1 measured four options and agreed O2s.** For every key window of the 5 copies, I
+fetched what the old parser stored (`sql/05`): 117,274 rows (`log` for the 3 recent systems,
+`archive_log` for the two 2025 copies). Every one of them is in its copy (`out/07`, `out/13`).
 
-| Option | Inserted from the 5 copies | Duplicates of stored rows | Never-stored rows lost |
+| Option | Duplicates of stored rows | Never-stored rows lost | Status |
 |---|---|---|---|
-| **O1** key + content only, R2 text | 69,043 | **6,839** (every old split-`Msg` Events row) | 0 |
-| O1 with exact export text (R1) | 179,478 | **117,274** (everything) | 0 |
-| **O2** rows captured before the switch match on key only | 62,204 | 0 | 0 |
-| **O2s** old split-shape Events rows match on key only (stateless), R2 text | 62,208 | 0 Events; the 4 EAL rows in the note below | 0 |
-| O3 high-water key per system and kind | 30,949 | 0 | **31,255** (suffixed rows below the mark) |
-| O4 cutover timestamp on device time | 0 | 0 | **62,204** |
+| O1 key + content only | 6,839 | 0 | rejected |
+| O2s old split-shape rows match on key only | 0 on the copies | 0 on the copies | **agreed (Q19), then withdrawn**: suppresses a changed row at an old key (finding 1) |
+| O3 high-water key | 0 | 31,255 | rejected |
+| O4 cutover timestamp | 0 | 62,204 | rejected |
 
-- **O2s works because the split shape gives the old rows away.** The old parser put the rest of a
-  multi-word `Msg` into `eal`. A new row's `eal` is always `Yes` or NULL. So a stored Events row
-  whose `eal` is neither `Yes` nor NULL is an old split row.
-  - On the copies, every Events content difference is one of these: 1,969 / 973 / 1,463 / 2,430
-    rows, equal to O1's duplicates exactly.
-  - Every other stored row (EAL, and Events with a one-word `Msg`) is already byte-equal in R2
-    text: 110,435 rows.
-- **Note: 4 rows were revised between grabs.** On SME18535 and SME18976, two pairs of EAL rows
-  stored by the old parser have garbled (`ā࿈噌䱁`) or NULL `Info`. The later copy has the real
-  text (`MP-Ctrl- Direction Changed.`, `TapeSw pressed`, …) (`out/08`). Each was captured about
-  8 minutes after it was logged, so the scanner was probably still writing its memo field. Under
-  Q6 the corrected row is kept as a second row with the same key. Whole-file parsing will see the
-  same thing now and then, for both kinds (Q25).
-- **Why not O2:** it needs a stored boundary: a Redis key set by the first run, or an env value
-  you set at deploy. Losing or mis-setting it makes rows match the wrong way. O2s needs no state
-  and gives the same result on the copies, apart from the 4 revised rows.
-- **Why not O3 / O4:** they drop rows nothing ever stored. For O4 that is the whole first buffer,
-  and suffixed rows are about half the Events.
-- **In practice the overlap may be empty.** A scanner in use resets its buffer within 2.3 days,
-  and all 9 have been unreachable since 10-30 / 11-02. But if reachability returns before this
-  deploys, the old parser stores more rows from the same buffers, so the rule is needed.
-- **The 2025 copies** (SME17372, SME18976): their stored rows are in `archive_log`, which the
-  dedupe doesn't read. If a long-silent system came back with a buffer that old, its rows would be
-  stored again in `log`. That's unlikely (the buffer resets), and the insight layer dedupes on the
-  key anyway. Accepted.
+**Why O2s fails (review finding 1).** Suppose an old row at key K says `Ready Now`, and a later
+buffer has K with different content, `Fault Raised`. Q6 says to keep both, but O2s's key-only
+match swallows the new row. The same would happen to any new row whose `EAL` is a value other
+than `Yes` or NULL. The 5 copies never exercise this case.
 
-### 9.4 Switching from `.output` to `.csv`
+**Round 2: rule P, a projection of the old pipeline (Q27).** A stored row matches an incoming
+row at the same key in one of two ways:
+- **(a) an old-parser row equals the projection.** The projection replays, from the decoded
+  `.csv` row:
+  1. the plain `mdb-export` record (quotes doubled, NULL empty, datetime `MM/dd/yy HH:mm:ss`);
+  2. for EAL: `awk 'NF>2'`, then the real `ct_eal_v_2` regex, `remove_dub_quotes` and
+     `''` → NULL;
+  3. for Events: the collector's `tr -cd` set, the `awk -F,` reorder, the `sed '^"dd/'` filter,
+     then the real `ct_events_v2` regex.
+- **(b) a new-parser row equals the new representation exactly.**
+
+Each stored row is consumed at most once (a multiset).
+
+**Provenance comes from the row itself, with no stored state.** New rows store `eal_time` /
+`event_time` as the export's `YYYY-MM-DD HH:MM:SS` (Q28). Every old-parser row has the old
+`MM/dd/yy HH:mm:ss` text: all 6,525,121 EAL and 5,097,213 Events rows in `log` (`out/19`). The old
+regexes can't store a NULL time. So a stored row is an old-parser row exactly when its time
+column has the old text:
+- no boundary to set, lose or move;
+- it still holds if a rollback lets the old parser store more rows (§9.4).
+
+**The projection, checked on the copies** (`scripts/legacy_projection.js`, `out/18`):
+- **A. The rebuilt plain record equals the real `mdb-export` record** on every EAL row. For
+  Events it does too, except the `ERROR_BLOB` rows: the plain export prints BLOB text that
+  `-b strip` removes. BLOB comes after the fields the old regex stores, so it doesn't change the
+  projection.
+- **B. The projection equals 117,270 of the 117,274 stored rows** at the same key.
+  - That includes 873 rows that the old regex merged with the next line (I6). With `EAL` NULL it
+    ran into the next line of the sorted file and stored that line's event time in `eal`. For
+    those rows the projection is exact on every column except `eal`, which must be a
+    `MM/dd/yy HH:mm:ss` value.
+  - The other 4 rows are the EAL rows revised between grabs (`out/08`): garbled or NULL `Info`
+    in the stored row, the real text in the later copy. Rule P keeps the corrected row as a
+    second row, which is what Q6 wants.
+
+**Inserts on the 5 copies under rule P** (`out/18`, "rule P"):
+
+| Seeded with | Inserts | Stored rows matched | What it is |
+|---|---|---|---|
+| `log` only (what the runtime reads) | **113,552** | 65,926 | the **expected total for the 1b.2 rehearsal**. The two 2025 copies insert in full (83,675), because their stored rows are in `archive_log` (accepted: those buffers are long gone) |
+| all saved history (`log` + `archive_log`) | 62,208 | 117,270 | the transition study: 62,204 never-stored rows + the 4 revised rows |
+
+**What rule P can't promise.** The old representation was lossy, so the projection can't tell
+apart two source rows that differ only in what the old pipeline destroyed. That needs the same
+key, with content differing only in characters `tr` stripped, in the words after the first space
+when `eal` is a merged I6 time, or in BLOB. In that case the later row matches the old one and
+isn't stored. No such pair exists in the copies.
+- **The other direction:** an old row the projection can't reproduce is simply not matched, so
+  the new row is stored next to it (a duplicate in the old shape). That happened 0 times on the
+  copies.
+- The ingest counts both cases per run in its log.
+
+### 9.4 Switching from `.output` to `.csv`, deploying, and rolling back
 
 - **Today:** `config.log` has 26 `EALInfo.output` rows (`regex_models {ct_eal_v_2}`) and 25
   `Events.output` rows (`{ct_events_v2}`). SME17372 has no Events row. 9 of these systems are
-  collected (`out/06`). No other app reads these `config.log` rows; the collector writes every file
-  for every collected system on its own.
-- **Proposed (Q21):**
+  collected (`out/06`). No other app reads these rows; the collector writes every file for every
+  collected system on its own.
+- **The switch (Q21, agreed):**
   - the new code reads only names ending in `.csv`. A `.output` name is skipped, with one WARN
     per run;
-  - after the code is deployed you run one `UPDATE` (draft below) that changes `file_name` and
-    `regex_models` on those 51 rows;
-  - **order: code first, then config.** The old code with a `.csv` name would be wrong: its EAL
-    regex half-matches a CSV line. For rollback, config first, then code;
+  - after the code deploy you run one `UPDATE` changing `file_name` and `regex_models` on those
+    51 rows;
   - a configured file that doesn't exist is skipped silently (I7). Until reachability returns,
-    that's every system: no rows, no errors.
+    that's every system.
 
   ```sql
-  -- draft; you run it after the PCT-1b deploy. Rollback: swap the names back.
+  -- draft; you run it in step 1b.5. Rollback: swap the names back.
   UPDATE config.log l SET file_name = 'EALInfo.csv', regex_models = '{ct_eal_csv}',
          last_updated_by = 'PCT-1b', last_updated_at = now()
   FROM systems s JOIN config.acquisition ac ON ac.system_id = s.id
@@ -1053,128 +1095,204 @@ Text form "R2" below means: `eal_time` / `event_time` in the old `MM/dd/yy HH:mm
     AND ac.run_group = 1 AND l.file_name = 'EALInfo.output';          -- expect 26
   -- same for Events.output -> Events.csv, '{ct_events_csv}'           -- expect 25
   ```
-- **Redis (Q22):**
-  - the shared keys `<SME>.EALInfo.output` / `<SME>.Events.output` are no longer read or written,
-    and keep their last offsets. `hhm_rpp` no longer runs CT (§1.1), and the new code never uses
-    those names;
-  - **rollback needs them reset:** before going back to the old code, set each to its current
-    `.output` size, or the old parser re-reads a partial tail. The commands go in the deploy notes;
-  - new keys `<SME>.EALInfo.csv` / `<SME>.Events.csv` hold `{size, sha256}` of the last file fully
-    ingested. An identical file is skipped (an idle scanner gives byte-identical exports every
-    grab). This is only an optimisation: if a key is lost, the next run re-reads the file and
-    dedupe inserts nothing.
-- **The `.output` files (Q26):** the collector keeps writing them and nothing reads them.
-  `log.saved_files` stops getting them, because `gzip_n_save` saves the configured names. After 5
-  clean days, a separate small collector step (PCT-C2, `hhm_data_acquisition`) removes the legacy
-  exports.
+- **Deploy with a drain (Q30; review finding 3).** Each cron run is a fresh process that loads
+  its config once at start, so the barrier is "no CT process running":
+  1. right after a `:18` / `:48` run has finished (about `:21`), check that
+     `pgrep -af 'index.js PHILIPS_CT'` prints nothing;
+  2. pull the new code;
+  3. run the `UPDATE`, all before the next cron start.
 
-### 9.5 Design
+  If a cron start falls between steps 2 and 3, the new code sees `.output` names and skips them:
+  harmless. The old code never meets `.csv` names. Nothing old can still be running, so the two
+  parsers never write at the same time.
+- **Rollback, with reconciliation (Q30; review finding 3).** Setting the old `.output` offsets
+  to the end of the file is only safe if the current snapshot was fully ingested. Otherwise its
+  unread rows would be skipped. So:
+  1. **Stop CT:** comment out the CT cron line and wait until `pgrep` is empty.
+  2. **Check:** run `node tooling/philips_ct_rollback_check.js` (new, read-only). Per system and
+     file it compares the current `.csv`'s sha256 with the Redis done-hash, and checks that the
+     `.csv` and `.output` came from the same publish (`Logger.mdb` mtime, and the files' mtimes
+     within the same grab). It prints, per file, `RECONCILED` or `NOT RECONCILED`, plus the exact
+     commands:
+     - `cp` of each not-reconciled `.csv` into the retained store (§9.5), for a later replay;
+     - `redis-cli SET <SME>.<file>.output <current size>` for every file.
+  3. **You run those commands.**
+  4. **Restore:** the old `config.log` names, then the previous `PROD` commit, then the cron line.
+  5. **After the fix:** replay the retained snapshots with the new parser. Rows the old parser
+     stored in the meantime still have the old time text, so rule P matches them, and the
+     replay adds only what is missing.
+- **Redis (Q22, agreed):**
+  - the `.output` offset keys are no longer read or written, and keep their last values until
+    a rollback resets them (above);
+  - new keys `<SME>.EALInfo.csv` / `<SME>.Events.csv` hold `{size, sha256}` of the last file
+    fully handled (ingested, or partly ingested with its bad lines retained). An identical file
+    is skipped. This is only an optimisation: a lost key means one more diff and no insert.
+- **The `.output` files (Q26, agreed):** the collector keeps writing them and nothing reads them.
+  `log.saved_files` stops getting them. After 5 clean days, PCT-C2 removes the legacy exports.
+
+### 9.5 Design (revised after review round 1)
 
 New code under `jobs/Philips/CT/`. The byte-offset path is removed: `eal_parser.js`,
 `events_parser.js`, and the CT use of `data_acquisition/Philips_CT.js`.
 
 | Piece | What it does |
 |---|---|
-| `csv.js` | **Decode.** A CSV state machine over the whole text: quoted fields, `""` → `"`, records end at LF or CRLF outside quotes. Then one left-to-right unescape pass per field: `\n \r \t \\`; any other backslash pair is kept as is. An unquoted empty field is NULL; `""` is empty text. Malformed quoting throws |
-| `rows.js` | **Build rows.** Checks the exact header of each table. Splits the key into `host_date` and `host_time` (suffix kept, I1). EAL columns as today. Events: `message` = `Msg` whole (line breaks and trailing whitespace kept), `eal` = `EAL` (`Yes` / NULL) (I3). R2 text (Q20). BLOB dropped |
-| `time.js` | **`host_datetime`** from the wall clock and the site time zone, `America/New_York` when NULL (as today). **The repeated DST hour always takes the earlier offset** (luxon 3.6 `getPossibleOffsets()`), so the stored instant no longer depends on when the parser ran (§1.5; `out/16_luxon_dst.txt`). Non-existent spring-forward times move forward, as luxon does now |
-| `ingest.js` | **Per file, in one transaction:** `pg_advisory_xact_lock(system, kind)`; read the stored rows of that system and kind with `host_datetime` within the file's span ±1 day; a multiset diff on (key, content) with the O2s rule; insert what's left in batches of 5,000; commit. Kind: Events if any Events column is set, else EAL. Content: the 20 text columns, without `host_datetime`, `capture_datetime`, `id` and `status`, so a time-zone or DST fix never creates a duplicate. `capture_datetime` = when the file's processing starts |
-| `index.js` | **Per configured file:** skip if missing (silent) or not `.csv` (WARN). Skip if the Redis hash is unchanged. Otherwise ingest, then update the hash, then `gzip_n_save` as today. The EAL ingest upserts `alert.offline_hhm_conn` |
+| `csv.js` | **Decode.** Records are physical lines. That's the dialect's guarantee: `-e` escapes every line break inside a field, and all 179,478 rows of the copies are one line each. A trailing CR is dropped (CRLF). Each line is parsed for quoting (`""` → `"`), then gets one left-to-right unescape pass per field (`\n \r \t \\`; any other backslash pair is kept). An unquoted empty field is NULL; `""` is empty text. A line with bad quoting is a bad record, not a fatal error |
+| `rows.js` | **Validate and build.** Exact header per table. Per record: field count; key `yyyy/MM/dd HH:mm:ss.SSS[__NN]`, a real calendar date and time (luxon `isValid`; `2026/02/30` is rejected); for Events, at least one stored Events column set (review finding 5). Output: `host_date` / `host_time` (suffix kept), `message` = `Msg` whole, `eal` = `EAL` as given. **Q28 text:** `eal_time` / `event_time` = the export's `YYYY-MM-DD HH:MM:SS`, `Info` right-trimmed (`/\s+$/`, all-blank → NULL), everything else exact. Each built row is checked to classify back into its own kind |
+| `legacy.js` | **Rule P's projection** (§9.3), using the repo's real `ct_eal_v_2`, `ct_events_v2` and `remove_dub_quotes`, plus the collector's `tr` set and `awk` reorder |
+| `time.js` | **`host_datetime`** from the wall clock and the site zone (`America/New_York` if NULL, as today). The repeated DST hour takes the earlier offset (Q23, agreed). **An invalid zone string** gives `host_datetime` NULL and an ERROR (Q33); the candidate read covers NULL |
+| `ingest.js` | **Per file, one transaction:** see the five steps below the table |
+| `retain.js` | **Durable retention and replay (Q29; review finding 2):** see below the table |
+| `index.js` | **Per configured file:** missing → silent skip; not `.csv` → WARN. Then read the file **once into a buffer**, and sha256 it. An unchanged hash → skip. Otherwise validate, ingest, retain if needed, set the hash, and save **the same buffer** to `log.saved_files` (`gzip_n_save` gets the buffer, not the path, which the collector may have replaced since; finding 2). Also the replay entry point: `node index.js PHILIPS_CT_REPLAY <retained file>` |
 
-- **Fail closed (Q24):** a wrong header, bad quoting, a wrong field count or a malformed key is an
-  ERROR for that file. Nothing from it is inserted and its hash isn't updated, so the next run
-  tries again. Nothing is dropped silently.
-- **DRY_RUN:** today's guard refuses `db.tx`. Under `DRY_RUN=1`, `ingest.js` skips the
-  transaction and lock, runs the read as a plain `SELECT`, and records the inserts as now. Redis
-  writes are skipped by the existing proxy.
+**`ingest.js`, per file, one transaction:**
+1. **Lock without waiting:** `pg_try_advisory_xact_lock(system, kind)`. If another writer holds
+   it, skip the file this run.
+2. **Capture time:** `capture_datetime` = the time the lock was taken.
+3. **Candidate read** (finding 4): `system_id = $1 AND (host_datetime within the file's span ±2
+   days OR host_datetime IS NULL) AND host_date = ANY(file dates) AND <kind predicate>`. This is
+   complete for every accepted key: a stored `host_datetime` is either NULL or the raw key read
+   in some IANA zone (−12 h to +14 h, plus a 1 h DST fold).
+4. **Match and insert:** a multiset match under rule P, then inserts in batches of 5,000.
+5. **EAL only:** upsert `alert.offline_hhm_conn` with `GREATEST(stored, newest inserted
+   host_datetime)` (Q32). Then commit.
+
+- **The deadline** (Q31; finding 8): commit before the next alert-processor start (minutes 24
+  and 54, a named constant) minus 60 s. Each statement gets
+  `SET LOCAL statement_timeout` = the time left. A file isn't started with less than 30 s left.
+  On expiry: roll back, don't set the hash, and the next run retries. Its rows then get the
+  later capture time, so the next alert run sees them.
+- **The kind predicate** is identical in SQL and JS: Events if
+  `num_nonnulls(type, level, module, time_stamp, message, eal, event_time) > 0`, else EAL.
+
+**`retain.js`, durable retention and replay:**
+- **What gets retained:**
+  - a file with bad records keeps its good ones: they're ingested, the file is logged as
+    partial with an ERROR, and the **exact bytes** are retained with a `reasons.json` (line
+    number, field, reason for each bad record);
+  - a file with a wrong header, or with more than max(10, 1%) bad lines, is treated as a format
+    change: nothing is ingested, the bytes are retained, and its hash isn't set (an ERROR every
+    run).
+- **Where:** `retained/philips_ct/<SME>/<utc>_<sha12>_<file>` in the app directory (gitignored).
+  Each distinct content is stored once, never deleted automatically, and listed in the ERROR note.
+- **Replay** ingests a retained file through the same path. Dedupe makes it idempotent. A fully
+  replayed file moves to `replayed/`.
+
+- **DRY_RUN:** the existing guard refuses `db.tx`. Under `DRY_RUN=1`, `ingest.js` takes no lock
+  and opens no transaction, runs the candidate read as a plain `SELECT`, and records the inserts
+  and the upsert. Retention writes and the Redis `SET` are recorded, not done.
 - **Not changed:**
   - `scan_seconds` (CT never wrote `logfile_event_history_metadata`);
   - the table and its indexes;
   - the other Philips jobs.
-- **Node 16:** prod runs v16.20. The code avoids anything newer. Tests use `node --test`, which
-  works on 16.20 and is what `hhm_rpp_ge` uses, so no new dependency.
-- **Fixtures (Q18):** rows from the 5 copies chosen to cover suffixed, comma, multi-line, NULL
-  `Info`, coded, twin and `Series … cancelled` rows. A scan found no IP, MAC, host, serial or AE
-  title in any copy (`out/12`); the fixture builder still masks those patterns and fails if any
-  remain. System ids become `SME00001…`.
-  - The folder must be lower-case `__tests__/fixtures/philips_ct/`: the repo's `.gitignore`
-    ignores any path component named `Philips_CT`.
-  - Raw copies and the generated `.csv` files stay in `~/philips_ct_evidence/`.
+- **Node 16, and tests with `node --test`** (it works on 16.20; no new dependency).
+- **Fixtures (Q18):** rows from the 5 copies covering suffixed, comma, multi-line, NULL `Info`,
+  coded, twin, `ERROR_BLOB`, I6-merge and `Series … cancelled` rows. System ids become
+  `SME00001…`. A scan found no IP, MAC, host, serial or AE title (`out/12`); the builder still
+  masks those patterns and fails if any remain.
+  - The folder must be lower-case `__tests__/fixtures/philips_ct/`: `.gitignore` ignores any
+    path component named `Philips_CT`.
+  - Synthetic cases cover what the copies lack: doubled quotes, non-ASCII text, all-NULL Events
+    payloads, impossible dates, a key reused with different content.
 
 ### 9.6 Performance (measured 2026-11-20)
 
 - **Decode + diff in Node 16** (`scripts/bench_parse.js`, `out/10`): at most 232 ms decode +
-  224 ms diff for the largest file (3.33 MB, 30,949 rows). Heap under 100 MB.
-- **The stored-rows read** (`sql/06`, `out/09`, `out/11`):
-  - on the server, 18–69 ms (index scans on `(system_id, host_datetime)`, with no partition
-    pruning needed);
-  - end to end for the busiest system's padded 3-day window (87k rows, both kinds, full
-    content), 1.9 s. Key plus an md5 of the content halves that, but the full read is kept: it
-    avoids an SQL/JS hash-equivalence risk.
-- **Per run, worst case** (all 9 systems changed): about 9 × (2 × 0.5 s + 2 × 1–2 s) ≈ 30 s. An
-  unchanged file costs one sha256 (milliseconds).
-- **Inserts:** the first parse of a full buffer inserts up to about 31k rows per file. The old
-  parser did the same on every reset ("Reading entire file"). The batches go in one transaction
-  per file.
+  224 ms diff for the largest file (3.33 MB, 30,949 rows). Heap under 100 MB. The projection
+  adds one regex per row (to measure in 1b.2).
+- **The candidate read:**
+  - the complete form (±2 days plus NULL, with a `host_date` filter) takes 251 ms on the server
+    for the busiest system (`sql/09`, `out/20`), via a `BitmapOr` on the `host_datetime` indexes;
+  - the earlier ±1-day form was 18–69 ms (`out/09`). End to end the read took 1.9 s (`out/11`).
+- **Per run, worst case** (all 9 systems changed): about 30–40 s. An unchanged file costs one
+  sha256. The deadline caps any run at the next alert window anyway.
+- **Not measured yet** (finding 8):
+  - the first full-buffer write, up to about 31k rows per file, which the old parser also did on
+    every reset;
+  - lock contention;
+  - the alert processor's extra work (CT rows per run up about 45%).
+
+  1b.2 measures the write and the lock. 1b.6 watches the alert processor's run time.
 - **December partition:** every `log.*` table ends at `…_2026_11` today. Creating the 2026-12
   partition is routine fleet-wide work, but no CT insert can land in December without it.
 
-### 9.7 Questions — AGREED 2026-11-20
+### 9.7 Questions
 
-You accepted every recommendation below as written on 2026-11-20. Each answer is marked
-**AGREED**; the reasoning is kept as it was.
+**Round 1, AGREED 2026-11-20** (your answers, as recommended). Three were changed by the design
+review, as marked:
 
-19. **The transition from old rows. AGREED: O2s (§9.3).** Old split-shape Events rows
-    match on key only. Everything else matches on key plus content, as in Q6. It needs no stored
-    state, and on the 5 copies it gives 0 duplicated Events rows and loses nothing that was never
-    stored. Not chosen:
-    - O1 (6,839 duplicates);
-    - O2 (the same result but needs a stored boundary);
-    - O3 / O4 (lose 31k / 62k never-stored rows).
-20. **Text form of the unchanged columns. AGREED: R2:**
-    - `eal_time` and `event_time` in the old `MM/dd/yy HH:mm:ss` text;
-    - `Info` right-trimmed, as the old parser did (the device pads it to a fixed width), with an
-      all-blank `Info` stored as NULL.
+19. ~~The transition: O2s.~~ **Superseded by Q27** (review finding 1: O2s suppresses a changed
+    row at an old key).
+20. **Text form. AGREED: R2. Its date part is superseded by Q28.** `Info` right-trimmed stays.
+    The rest stays exact.
+21. **Switching files. AGREED:** the `config.log` `UPDATE` in §9.4, run by you after the code
+    deploy. The code refuses `.output` names.
+22. **Redis. AGREED:** the `.output` offset keys are left alone (reset only in a rollback, §9.4);
+    the `<SME>.<file>.csv` hash keys skip unchanged files.
+23. **The DST hour. AGREED:** the earlier offset, deterministic, with `host_datetime` kept out of
+    the dedupe content. Keys and days on the wall clock (Q8).
+24. ~~A malformed file: fail closed for the whole file.~~ **Superseded by Q29** (review finding
+    2: a failing file can lose its whole buffer at the next reset).
+25. **Revised rows. AGREED:** keep both, as Q6 says. The insight-side rule is decided in PCT-2.
+26. **The `.output` files. AGREED:** written and ignored until 5 clean days after the deploy, then
+    removed by PCT-C2.
 
-    Everything else is stored exactly: `Msg` whole, NULL vs `""` kept. Each column then stays
-    uniform across old and new rows, and new EAL rows equal old ones byte for byte (77,260 of
-    77,264; the other 4 are the revised rows). "DB = MDB" in the exit criteria means equal apart
-    from these two documented forms. Not chosen: R1 (exact export text), which makes O2s
-    impossible for EAL and mixes two formats in two columns.
-21. **Switching files. AGREED: the `config.log` `UPDATE` in §9.4, which you run after
-    the code deploy.** The code refuses `.output` names. Not chosen: mapping `.output` → `.csv` in
-    code without a DB write. That's one step fewer, but the config would no longer say what is
-    read.
-22. **Redis. AGREED:**
-    - leave the `.output` offset keys as they are, with a reset step in the rollback notes;
-    - add the `<SME>.<file>.csv` hash keys to skip unchanged files.
+**Round 2, after the design review: AGREED 2026-11-24** (your answers, as recommended):
 
-    Not chosen: no Redis at all. That works, but it re-reads every unchanged file and its stored
-    rows on every run, about 20–30 s and tens of MB of reads per run for nothing.
-23. **The DST hour. AGREED: the earlier offset, deterministic (§9.5), with
-    `host_datetime` kept out of the dedupe content.**
-    - Keys and days stay on the wall clock (Q8).
-    - Old rows aren't corrected (Q5).
-    - Second-pass rows get an instant 1 h early, one hour a year per system. No field
-      disambiguates the two passes: table order isn't time order (§9.1), and `TStampNum` is also
-      wall clock.
-24. **A malformed file. AGREED: fail closed for that file** (ERROR, nothing inserted,
-    retried next run). Not chosen: skipping bad rows, which would drop rows silently.
-25. **Rows revised between grabs (§9.3 note). AGREED: keep both rows, as Q6 says. The
-    insight layer's rule (prefer the latest capture per key outside the DST hour) is decided in
-    PCT-2.** 4 of 117,274 stored rows so far.
-26. **The `.output` files. AGREED:** the collector keeps writing them and the parser
-    ignores them until 5 clean days after the PCT-1b deploy. Then PCT-C2, a separate small
-    `hhm_data_acquisition` step reviewed like PCT-C, removes the legacy exports.
+27. **The transition rule. Recommendation: rule P (§9.3).** Old-parser rows (old time text) match
+    the projection of the old pipeline; new rows match exactly; multiset. It reproduces 117,270
+    of 117,274 stored rows (the other 4 are genuine revisions, kept). It keeps a changed row at
+    an old key. It needs no stored state. Not chosen: O2s (finding 1), or a deploy-time boundary
+    (state that can be lost, and a rollback breaks it).
+28. **`eal_time` / `event_time` in new rows. Recommendation: the export's `YYYY-MM-DD HH:MM:SS`**
+    instead of the old `MM/dd/yy` text.
+    - It marks every row's origin, which is what rule P needs.
+    - It keeps the 4-digit year, and it's the exact source text.
+    - Cost: the two columns hold the old format before the deploy and the new one after. Nothing
+      reads them today (§9.2).
+29. **Bad input. Recommendation: quarantine and durable retention (§9.5).**
+    - Bad records are set aside and the good ones ingested, with an ERROR.
+    - A wrong header or more than max(10, 1%) bad lines retains the whole file and ingests
+      nothing.
+    - The exact bytes are always kept until replayed, and the same bytes go to `log.saved_files`.
+30. **Deploy and rollback. Recommendation: the drain and the reconciled rollback in §9.4,** with a
+    read-only check tool that prints the commands for you to run.
+31. **The alert window. Recommendation: a no-wait lock and a commit deadline 60 s before the next
+    alert-processor start, retrying next run (§9.5).** Not chosen: a time budget with no
+    enforcement.
+32. **`alert.offline_hhm_conn`. Recommendation:** upsert it inside the EAL transaction, never
+    moving it backwards. Today it is overwritten after the insert, outside any transaction.
+33. **An invalid site time-zone string. Recommendation:** store `host_datetime` NULL with an
+    ERROR. Keys, days and dedupe don't depend on it. Not chosen: falling back to
+    `America/New_York` silently, which is right today only for the 4 Florida sites with NULL.
 
 ### 9.8 Steps and exit criteria
 
 | Step | Content | Exit | Earliest |
 |---|---|---|---|
-| **1b.0 Plan** | this section | Q19–Q26 answered and recorded as AGREED | **done: AGREED 2026-11-20** |
-| **1b.1 Build** | `csv.js`, `rows.js`, `time.js`, `ingest.js`, `index.js`; masked fixtures; tests under `__tests__/` (`node --test`) | **Decoder:** literal backslashes, `\\n` vs `\n`, doubled quotes, CRLF, tabs, adjacent escapes, a trailing lone backslash, empty vs NULL, non-ASCII. **Rows:** header and key checks, suffix, `Msg` / flag, R2. **Time:** DST both ways, NULL zone. **Ingest** (DB stubbed): multiset diff, O2s, re-run, reset, fail closed, missing file silent, `.output` refused, hash skip. Each test is checked to fail under a matching mutation. No test opens the network or a real DB; every child process is bounded | after 2026-11-24 18:53 UTC, once you confirm the cutover closed |
-| **1b.2 Exactness** | throwaway PostgreSQL 14 (local `initdb`, socket only) with the table's DDL; the real parser code; the 5 copies' `.csv` files | **DB = MDB** for every copy, both tables: the multiset of (key, content) equals an independent reference (plain `mdb-export` → Python) modulo R2. That includes the suffixed, comma and multi-line Events rows and the 43 `Series … cancelled` lines. **0 inserted on a re-run. 0 duplicates across a simulated reset** (half a buffer, then the full one, then a disjoint one). **Transition rehearsal:** old rows from `sql/05` loaded first, then each copy: inserted = the O2s column of §9.3 | after 1b.1 |
-| **1b.3 DRY_RUN** | `DRY_RUN=1` from the dev checkout against prod (read-only sessions) | (a) prod's files as they are: every CT file skipped silently, 0 writes, 0 CT errors. (b) `DEV_FILE_PATH` pointing at the copies' `.csv` for SME20598 / SME18534 / SME18535: the planned inserts equal the O2s numbers against the real stored rows, run time recorded. The parity check doesn't apply: `hhm_rpp` no longer runs CT, and MDB is the reference (1b.2) | after 1b.2 |
-| **1b.4 Review** | `REVIEW-PCT1B-PARSER-HANDOFF.md` → Codex → `REVIEW-PCT1B-PARSER-CODEX.md`; fixes recorded here | the review closed; then commit with your OK | after 1b.3 |
-| **1b.5 Deploy** (you) | confirm `crontab -l` has no `hhm_rpp … philips_ct` line; promote `DEV` → `STAGING` → `PROD`; pull in `/home/prod/hhm_rpp_philips`; the `config.log` `UPDATE`; watch the next `:18` / `:48` run | the first run: `PHILIPS_CT` warn/error 56 → 0 (all files missing, silent), nothing inserted | after 1b.4, and with or after PCT-C (done) |
-| **1b.6 Monitor** | 5 clean days; and once a CT system is reachable, its first `.csv` grab | 5 clean days of runs. **On the first live capture:** DB = that grab's `Logger.mdb` (keys and content, both tables), 0 duplicates on the following runs, and the alert-processor run after it still in its window. Close-out needs the live capture (§6), so it waits on reachability (§8.1) | after 1b.5 |
+| **1b.0 Plan** | this section | Q19–Q26 AGREED | **done 2026-11-20** |
+| **1b.0r Design review** | round 1: `REVIEW-PCT1B-PLAN-CODEX.md` (3 P1, 6 P2), answered in §9.9. Round 2: the updated handoff → `REVIEW-PCT1B-PLAN-CODEX-2.md` | no open P1/P2, and Q27–Q33 AGREED (**done 2026-11-24**) | now, before 2026-11-24 |
+| **1b.1 Build** | `csv.js`, `rows.js`, `legacy.js`, `time.js`, `ingest.js`, `retain.js`, `index.js`, `tooling/philips_ct_rollback_check.js`; masked fixtures; `node --test` | **Decoder:** literal backslashes, `\\n` vs `\n`, doubled quotes, CRLF, tabs, adjacent escapes, a trailing lone backslash, empty vs NULL, non-ASCII, a bad-quote line. **Rows:** header, field count, key format, impossible dates, all-NULL Events payload, kind round-trip, Q28 text. **Legacy oracle** (finding 6): the projection against the **actual old regexes and helpers** on synthetic doubled quotes in `Info`, `File` and `ErrNum`, tabs, backslashes, Unicode whitespace, empty vs NULL, the I6 merge. **Transition identity** (finding 1): old split A → same A → changed B at the same key over separate snapshots; reset and clock reversal; a nonstandard `EAL` value; old and new candidates together; duplicate stored rows; order permutations. Assert which rows are inserted, not just totals. **Time:** DST both ways, NULL and invalid zones. Each test is checked to fail under a matching mutation. No network, no real DB, every child process bounded | after 2026-11-24 18:53 UTC, once you confirm the cutover closed |
+| **1b.2 Exactness and rehearsal** | throwaway PostgreSQL 14 (local `initdb`, socket only) with the real DDL: monthly partitions including a month boundary, the indexes, `alert.offline_hhm_conn`; the real parser code and SQL | **DB = MDB** for each copy on an empty DB, both tables: the multiset of (key, content) equals an independent reference (plain `mdb-export` → Python) under Q28/R2 text, including suffixed, comma, multi-line and the 43 `Series … cancelled` rows. **Re-run, Redis cleared:** 0 inserted. **Reset** (half a buffer, then the full one, then a disjoint one): 0 duplicates. **Production-shaped seed** (finding 7): only `log`-eligible old rows from `sql/05`, with their real capture times; inserts = **113,552** in total, matching the per-copy table in §9.3, with their identities checked. Then a repeat, a Redis loss and a changed snapshot. **Candidate SQL** (finding 4): stored NULL `host_datetime`, a zone change of 26 h, a suffixed key: each inserted row visible to its next read. **Transactions** (required addition 5): two connections on one file; a failure in a later batch; a kill before commit, after commit but before Redis, and after Redis but before the save; the deadline expiring; reader visibility at a simulated `:24`. **Retention:** a bad line among good ones; repeated failure, then the buffer replaced; a bad header; a save failure; the file replaced between read and save; replay after the original is gone. **Rollback rehearsal:** unprocessed new bytes, and after a validation failure; check-tool output; offset ordering; redeploy with existing hashes. Measured: the first full-buffer write and the lock behaviour | after 1b.1 |
+| **1b.3 DRY_RUN** | `DRY_RUN=1` from the dev checkout against prod (read-only sessions) | (a) prod's files as they are: every CT file skipped silently, 0 writes, 0 CT errors. (b) `DEV_FILE_PATH` → the copies' `.csv` for SME20598 / SME18534 / SME18535: the planned inserts equal the "`log` only" rule-P counts (SME20598: 15,197 Events, 0 EAL; SME18534: 623 Events, 0 EAL; SME18535: 14,055 Events, 2 EAL, the revised rows) against the real stored rows, run time recorded. The parity check doesn't apply: `hhm_rpp` no longer runs CT, and MDB is the reference | after 1b.2 |
+| **1b.4 Code review** | `REVIEW-PCT1B-PARSER-HANDOFF.md` → Codex → `REVIEW-PCT1B-PARSER-CODEX.md`; fixes recorded here | the review closed; then commit with your OK | after 1b.3 |
+| **1b.5 Deploy** (you) | confirm `crontab -l` has no `hhm_rpp … philips_ct` line; the 2026-12 partition if it's December; promote `DEV` → `STAGING` → `PROD`; the drain (§9.4); pull; the `config.log` `UPDATE`; watch the next run | the first run: `PHILIPS_CT` warn/error 56 → 0 (all files missing, silent), nothing inserted | after 1b.4 |
+| **1b.6 Monitor** | 5 clean days; and once a CT system is reachable, its first `.csv` grab | 5 clean days of runs, no retained files. **On the first live capture:** DB = that grab's `Logger.mdb` (keys and content, both tables); 0 duplicates on the following runs; the commit before `:24`; the next alert-processor run tested the new rows; its run time recorded against the days before. Close-out needs the live capture (§6), so it waits on reachability (§8.1) | after 1b.5 |
+
+### 9.9 Design review round 1 (Codex, 2026-11-20): what changed
+
+Review: `REVIEW-PCT1B-PLAN-CODEX.md`. Verdict: change the design before building. Codex checked
+the installed `mdb-export` on both tables of all 5 copies: 0 row-count mismatches and 0 field
+mismatches after one-pass unescaping, and 0 unknown escape pairs.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 P1 | O2s's key-only match suppresses a changed row at an old split key, and a nonstandard `EAL` value would make new rows key-only too | **Agreed.** Replaced by rule P (§9.3, Q27): projection matching for old-parser rows, provenance from the time text (Q28). Measured: the projection reproduces 117,270 of 117,274 stored rows (`out/18`) |
+| 2 P1 | Fail-closed retries can lose a whole buffer when the scanner resets | **Agreed.** Quarantine bad records, ingest the rest, retain the exact bytes durably with a replay path, and save the same bytes (§9.5, Q29) |
+| 3 P1 | Rollback's end-of-file offset reset skips unread rows; an in-flight old process isn't covered by the advisory lock | **Agreed.** A drain at deploy; a reconciled rollback with a read-only check tool and retention of unreconciled snapshots (§9.4, Q30). Rule P's provenance holds across a rollback |
+| 4 P2 | The candidate read misses NULL `host_datetime` and zone changes over 24 h | **Agreed.** ±2 days OR NULL, plus a `host_date` filter, complete for accepted keys (251 ms, `out/20`); impossible dates rejected; invalid zones → NULL + ERROR (Q33). 0 NULL `host_datetime` in `log` today (`out/19`) |
+| 5 P2 | An all-NULL Events payload reads back as EAL | **Agreed.** Validation requires an Events column set; a kind round-trip check before insert; the same predicate in SQL and JS |
+| 6 P2 | R2 isn't old-parser-equivalent for doubled quotes in `Info`, `File`, `ErrNum` | **Agreed.** Transition comparison now uses the projection with the real old regex and helpers, not trimming plus date text. The 77,260-row claim is limited to the measured data |
+| 7 P2 | Seeding archived rows doesn't model the runtime read (113,552 vs 62,208) | **Agreed.** The rehearsal seeds `log`-eligible rows only, expected total 113,552; the all-history count is kept as a separate study (§9.3) |
+| 8 P2 | The alert-window budget isn't enforced | **Agreed.** No-wait lock, capture time at the lock, commit deadline before the next alert run, retry next run (§9.5, Q31). The heartbeat goes into the same transaction (Q32) |
+| 9 P2 | The keys are primary keys (`mdb-schema … postgres`) | **Agreed; corrected** in §9.1 (`out/17`). Multiset handling stays for stored history. DST tests use sequential snapshots |
