@@ -33,3 +33,9 @@ Siemens_Files
 capture_with_re.js
 
 configWriter/*.sql
+
+# PCT-1b Philips CT: local spool, retention, replay and audit copies (never committed)
+/spool/
+/retained/
+/replayed/
+/done/
