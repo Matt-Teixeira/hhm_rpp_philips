@@ -1,5 +1,33 @@
 # Review handoff: PCT-1b parser fix design (Philips CT), before the build
 
+## Round 6 (2026-11-24): the design revised for `REVIEW-PCT1B-PLAN-CODEX-5.md`
+
+Repo `hhm_rpp_philips`, branch `DEV`. The round-5 revision is committed on `DEV`, on top of `7030109`.
+**§9 is authoritative**; the changes are listed in §9.13. Please write round-6 findings to
+`REVIEW-PCT1B-PLAN-CODEX-6.md`. Ground rules unchanged (below). Q27–Q44 are AGREED.
+Q45–Q47 are AGREED too (2026-11-24, as recommended). Still no parser code.
+
+| Round-5 finding | Change | Where | New evidence (`~/philips_ct_evidence/pct1b/`) |
+|---|---|---|---|
+| 1 P2 slot-relative reader timing | Contract S replaces K and D: each scheduled run's CT snapshot at DB time in `[slot − 60 s, slot + 5 min]`, launch, bootstrap, queue and clock error included; outside S = a reader failure, monitored. The exactly-one argument is restated for the readers at N, N_next and N_next + 30 min | §9.5 `coverage.js`, Q45 | `sql/13`, `out/26`: runs assigned to the *nearest* slot; 672 runs, 0 early (< slot − 50 s), 0 ending after slot + 5 min, 0 with `ERROR`, 0 missed, 0 multiple |
+| 2 P2 detached archive partition | Automatic outcome decisions only within 24 h of `t0` **and** with the capture's partition attached (catalog check); otherwise unknown + ERROR, never a later automatic "aborted". A read-only, archive-aware `tooling/philips_ct_outcome.js check`; `resolve` records only a complete answer | §9.5 `ingest.js`, Q46 | checked: `fse_dispatch` `odd-jobs/archive-partitions.sql` detaches `philips_ct_eal_events` six months back |
+| 3 P2 audit rename crash gap | A separate audit copy keyed by attempt id (idempotent), then the done-hash, then `state.json` → `complete`, then the bytes, then `state.json` last | §9.5 `spool.js`, Q47 | |
+
+Your other round-5 notes are applied: zero ids handled first; all/some/none counted against the
+recorded list; sequence advance never evidence; a pid never authorises a termination; a repair
+keeps its operation id, never overwrites unresolved intent, and a second repair starts from the
+first's new capture; §9.4's replay text follows Q38; the capacity note separates the 1 h WARN
+from the 6 h ERROR. Tests for each are in §9.8 (1b.1, 1b.2), and 1b.6 monitors S with `sql/13`.
+
+**Please look hard at (round 6):**
+1. **S.** Is `[slot − 60 s, slot + 5 min]` with the phase `(N + 6 min, N_next − 2 min)` and
+   `t1 < N_next − 90 s` exactly one read for all three adjacent slots? Is `sql/13` a fair
+   monitor of S, given that start is on the host clock and end on the DB clock?
+2. **Q46.** Is "partition attached" checkable exactly from the catalog for a text capture time,
+   and is the manual tool's "complete answer" rule sound?
+3. **Q47.** Every crash point in completion, including the done-hash before `complete`.
+4. Whether anything else stands between this design and the build.
+
 ## Round 5 (2026-11-24): the design revised for `REVIEW-PCT1B-PLAN-CODEX-4.md`
 
 Repo `hhm_rpp_philips`, branch `DEV`. The round-4 revision is committed on `DEV`, on top of `8e95ed3`.
