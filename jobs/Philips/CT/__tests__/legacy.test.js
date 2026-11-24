@@ -112,6 +112,17 @@ test("rule P: multiset — two equal stored rows, one incoming consumes one", ()
   assert.strictEqual(r.matchedNew, 1);
 });
 
+test("rule P: multiset — two identical incoming rows against one stored row insert exactly one", () => {
+  const [x] = incoming(EAL_H, [ealLine()], "eal");
+  const r = matchRuleP("eal", [x, x], [stored(x.row)]);
+  assert.deepStrictEqual(r.insert, [1]);
+  // The same for old rows: one stored old row is consumed once.
+  const p = project("eal", x.fields);
+  const old = { ...p };
+  delete old.dropped;
+  assert.deepStrictEqual(matchRuleP("eal", [x, x], [old]).insert, [1]);
+});
+
 test("rule P: a new row with NULL time matches only an identical new row", () => {
   const inc = incoming(EAL_H, [ealLine({ EalTime: "" })], "eal");
   assert.deepStrictEqual(matchRuleP("eal", inc, [stored(inc[0].row)]).insert, []);

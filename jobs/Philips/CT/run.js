@@ -289,6 +289,73 @@ async function dryRunSystem(job_id, sys, run_log) {
   }
 }
 
+// ---------- replay (plan §9.4 step 5, §9.5): PHILIPS_CT_REPLAY <retained file or rollback folder> ----------
+const { execFileSync } = require("child_process");
+const { APP_ROOT } = require("./spool");
+
+/** The collector's complete export of one table from a Logger.mdb (`-e -b strip -T`, NUL removed). */
+function exportCsv(mdbPath, table) {
+  const out = execFileSync("mdb-export", ["-e", "-b", "strip", "-T", "%Y-%m-%d %H:%M:%S", mdbPath, table], { maxBuffer: 1 << 30, timeout: 300000 });
+  return Buffer.from(out.filter((b) => b !== 0));
+}
+
+/** What a replay folder holds: [{file, kind, buf, source}]. */
+function replayInputs(folder) {
+  const base = path.basename(folder);
+  const out = [];
+  if (/^rollback_/.test(base)) {
+    for (const [file, kind] of [["EALInfo.csv", "eal"], ["Events.csv", "events"]]) {
+      const p = path.join(folder, file);
+      if (fs.existsSync(p)) out.push({ file, kind, buf: fs.readFileSync(p), source: file });
+    }
+    const mdb = path.join(folder, "Logger.mdb");
+    if (fs.existsSync(mdb)) {
+      out.push({ file: "EALInfo.csv", kind: "eal", buf: exportCsv(mdb, "EALInfo"), source: "Logger.mdb" });
+      out.push({ file: "Events.csv", kind: "events", buf: exportCsv(mdb, "Events"), source: "Logger.mdb" });
+    }
+  } else {
+    const m = /_(EALInfo\.csv|Events\.csv)$/.exec(base);
+    if (!m || !fs.existsSync(path.join(folder, "data"))) throw new Error(`not a retained CT file or rollback folder: ${folder}`);
+    out.push({ file: m[1], kind: kindOfFile({ file_name: m[1] }), buf: fs.readFileSync(path.join(folder, "data")), source: "retained" });
+  }
+  return out;
+}
+
+async function replay(folderArg, run_log) {
+  if (isDryRun()) throw new Error("PHILIPS_CT_REPLAY is not supported under DRY_RUN");
+  const folder = path.resolve(folderArg);
+  const m = /\/retained\/philips_ct\/(SME\d{5})\/[^/]+$/.exec(folder);
+  if (!m) throw new Error(`expected retained/philips_ct/<SME>/<folder>: ${folder}`);
+  const sme = m[1];
+  const queries = require("../../../data_acquisition/on_boot_queries");
+  const sys = (await db.any(queries.PHILIPS_CT)).find((x) => x.id === sme);
+  if (!sys) throw new Error(`${sme} is not a configured Philips CT system`);
+  const inputs = replayInputs(folder);
+  const spool = new Spool({ sme });
+  const lock = await lockSystem(spool.sysDir);
+  if (!lock) throw new Error(`the ${sme} spool lock is busy; try again after the CT run`);
+  const hashes = [];
+  try {
+    for (const x of inputs) {
+      spool.spoolSnapshot(x.file, x.buf, x.kind);
+      hashes.push(sha256(x.buf));
+    }
+  } finally {
+    await lock.release();
+  }
+  await log(I, run_log, "philips_ct_replay", det, { sme, folder, inputs: inputs.map((x) => ({ file: x.file, source: x.source, size: x.buf.length })) });
+  await runSystem("replay", sys, run_log);
+  const left = spool.entries().filter((e) => e.state && hashes.includes(e.state.sha256));
+  if (left.length === 0) {
+    const dest = path.join(APP_ROOT, "replayed", "philips_ct", sme, path.basename(folder));
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.renameSync(folder, dest);
+    await log(I, run_log, "philips_ct_replay", det, { sme, message: "fully replayed", moved_to: dest });
+  } else {
+    await log(W, run_log, "philips_ct_replay", det, { sme, message: "not fully replayed yet; the CT runs continue it", pending: left.map((e) => ({ entry: e.name, status: e.state.status })) });
+  }
+}
+
 const philips_ct_parsers = async (job_id, sysConfigData, run_log) => {
   const note = { job_id, sme: sysConfigData.id };
   try {
@@ -300,4 +367,4 @@ const philips_ct_parsers = async (job_id, sysConfigData, run_log) => {
   }
 };
 
-module.exports = { philips_ct_parsers, runSystem, dryRunSystem, complete, kindOfFile, MemorySpool };
+module.exports = { philips_ct_parsers, runSystem, dryRunSystem, complete, kindOfFile, MemorySpool, replay, replayInputs };

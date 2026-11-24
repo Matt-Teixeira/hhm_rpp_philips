@@ -1,0 +1,226 @@
+{
+ "eal": [
+  {
+   "key": "2026/10/28 13:07:42.812",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__01",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__02",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__03",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__04",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__05",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__06",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__07",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__08",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:07:46.231",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:43:30.294",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 14:58:33.890",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/29 08:38:03.246__02",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/29 08:06:59.049__01",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/29 11:10:48.386__02",
+   "matches_old": false,
+   "why": null
+  },
+  {
+   "key": "2026/10/29 11:10:48.434",
+   "matches_old": false,
+   "why": null
+  }
+ ],
+ "events": [
+  {
+   "key": "2026/10/28 13:07:42.812",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__01",
+   "matches_old": false,
+   "why": "no regex match"
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__02",
+   "matches_old": false,
+   "why": "no regex match"
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__03",
+   "matches_old": false,
+   "why": "no regex match"
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__04",
+   "matches_old": false,
+   "why": "no regex match"
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__05",
+   "matches_old": false,
+   "why": "no regex match"
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__06",
+   "matches_old": false,
+   "why": "no regex match"
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__07",
+   "matches_old": false,
+   "why": "no regex match"
+  },
+  {
+   "key": "2026/10/28 13:07:42.812__08",
+   "matches_old": false,
+   "why": "no regex match"
+  },
+  {
+   "key": "2026/10/28 13:07:46.231",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:08:04.089",
+   "matches_old": true,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:08:05.505",
+   "matches_old": true,
+   "why": "I6"
+  },
+  {
+   "key": "2026/10/28 13:08:05.506",
+   "matches_old": false,
+   "why": null
+  },
+  {
+   "key": "2026/10/28 13:08:05.506__01",
+   "matches_old": false,
+   "why": "no regex match"
+  },
+  {
+   "key": "2026/10/28 13:08:05.506__02",
+   "matches_old": false,
+   "why": "no regex match"
+  },
+  {
+   "key": "2026/10/28 13:08:05.816__02",
+   "matches_old": false,
+   "why": "line filter"
+  },
+  {
+   "key": "2026/10/28 13:08:05.816__06",
+   "matches_old": false,
+   "why": "line filter"
+  },
+  {
+   "key": "2026/10/28 13:08:05.929",
+   "matches_old": false,
+   "why": "line filter"
+  },
+  {
+   "key": "2026/10/28 13:08:24.142__02",
+   "matches_old": false,
+   "why": "line filter"
+  },
+  {
+   "key": "2026/10/28 13:08:24.142__03",
+   "matches_old": false,
+   "why": "line filter"
+  },
+  {
+   "key": "2026/10/28 13:08:32.610__05",
+   "matches_old": false,
+   "why": "line filter"
+  },
+  {
+   "key": "2026/10/28 13:08:44.354__02",
+   "matches_old": false,
+   "why": "line filter"
+  },
+  {
+   "key": "2026/10/28 13:08:57.979__03",
+   "matches_old": false,
+   "why": "line filter"
+  },
+  {
+   "key": "2026/10/28 13:09:06.731__09",
+   "matches_old": false,
+   "why": "line filter"
+  },
+  {
+   "key": "2026/10/28 15:33:45.773__04",
+   "matches_old": false,
+   "why": "line filter"
+  },
+  {
+   "key": "2026/10/29 10:09:04.239",
+   "matches_old": false,
+   "why": "line filter"
+  },
+  {
+   "key": "2026/10/29 12:55:40.451",
+   "matches_old": false,
+   "why": "line filter"
+  },
+  {
+   "key": "2026/10/29 14:17:35.905",
+   "matches_old": false,
+   "why": "line filter"
+  }
+ ]
+}

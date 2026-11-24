@@ -64,6 +64,14 @@ const onBoot = async () => {
       return;
     }
 
+    if (shell_value[0] === "PHILIPS_CT_REPLAY") {
+      // PCT-1b: node index.js PHILIPS_CT_REPLAY <retained file folder or rollback folder>
+      await require("./jobs/Philips/CT/run").replay(process.argv[3], run_log);
+      await dbInsertLogEvents(pgp, run_log);
+      await writeLogEvents(run_log);
+      process.exit();
+    }
+
     if (shell_value[0] === "reset_daily_system_totals") {
       await reset_daily_system_totals();
       return;
