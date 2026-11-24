@@ -1,19 +1,11 @@
 # Review handoff: PCT-1b parser fix design (Philips CT), before the build
 
-## Round 7 (2026-11-24): confirmation of the reader-monitor fix only
+## Review closed (2026-11-24)
 
-Repo `hhm_rpp_philips`, branch `DEV`. The round-6 answer is committed on `DEV`, on top of `a1d77bf`; the
-changes are listed in §9.14. Please write round-7 findings to `REVIEW-PCT1B-PLAN-CODEX-7.md`.
-Ground rules unchanged (below). Q27–Q47 are AGREED; there are no new questions and no design
-change. **Scope: only your round-6 P2 and the implementation notes from round 6.**
-
-| Round-6 item | Change | Where | Evidence (`~/philips_ct_evidence/pct1b/`) |
-|---|---|---|---|
-| P2 monitor misses early runs and terminal slots | `sql/14` replaces `sql/13`: expected slots from an explicit DB-clock interval (every slot whose S deadline has passed), runs assigned to the nearest slot by `inserted_at`; **violation** = end < slot − 60 s, missed, multiple, `ERROR`; **uncertain** = no start, start < slot − 50 s (host), end > slot + 5 min, start > end + 10 s; otherwise "consistent with S", never "measured". In the repo as `tooling/philips_ct_reader_monitor.js`, with fixture tests in 1b.2 | §9.5 `coverage.js` (the monitor), §9.8 1b.2, 1b.6 | `out/27`: 672/672 consistent, 0 violations, 0 uncertain. `sql/14t`, `sql/14z`, `out/28`: your early run → violation + clock disagreement; the stopped reader's 12:24 slot missed at 12:31; no runs → all 4 slots missed |
-| Notes on Q46 / Q47 | Typed-bound catalog check repeated after the id read; detach in progress or an ambiguous bound fails it; `resolve` does its own fresh check, and any failure means unknown; a `complete` entry is finished without its bytes; an empty leftover folder is removed | §9.5 `ingest.js`, `spool.js`, §9.8 1b.2 | |
-
-**Please confirm:** is the round-6 P2 closed by `sql/14` and its fixtures, and does anything
-remain before the design review can close (exit: no open P1/P2)?
+The design review closed after round 6: no open P1, and round 6's one P2 (the reader monitor)
+answered with `sql/14` and its fixtures (§9.14). No round 7 was run (the user's decision). The
+remaining checks are the build's tests (1b.1), the PostgreSQL rehearsal (1b.2), the dry run (1b.3)
+and Codex's code review (1b.4, its own handoff).
 
 ## Round 6 (2026-11-24): the design revised for `REVIEW-PCT1B-PLAN-CODEX-5.md`
 
