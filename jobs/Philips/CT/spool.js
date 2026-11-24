@@ -21,7 +21,8 @@ const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
 
-const APP_ROOT = path.resolve(__dirname, "../../..");
+// Where spool/, retained/, replayed/ and done/ live: the app directory, unless PHILIPS_CT_STATE_ROOT says otherwise.
+const APP_ROOT = process.env.PHILIPS_CT_STATE_ROOT ? path.resolve(process.env.PHILIPS_CT_STATE_ROOT) : path.resolve(__dirname, "../../..");
 
 /** The real filesystem operations; tests wrap this to fail at any step. */
 const realIo = {
@@ -212,7 +213,7 @@ class Spool {
    * @returns {Promise<"late"|"complete">}
    */
   async finish(dir, state, hooks) {
-    if (state.bad_lines > 0 && !state.retained) {
+    if ((state.bad_lines > 0 || state.format_change) && !state.retained) {
       state.retained = this.retain(dir, state.file, this.readBytes(dir), { reasons: state.bad_reasons || [], format_change: state.format_change || null });
       this.writeState(dir, state);
     }

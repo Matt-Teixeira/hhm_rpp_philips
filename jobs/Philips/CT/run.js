@@ -205,7 +205,7 @@ async function runSystem(job_id, sys, run_log) {
         if (r.prepared && r.prepared.zoneError) await log(E, run_log, "philips_ct_time", det, { ...note, entry: entry.name, message: r.prepared.zoneError });
         if (r.outcome === "committed") {
           committedSince.push(r.state.attempt_id);
-          if (r.prepared.bad.length) {
+          if (r.prepared.bad.length || r.prepared.formatChange) {
             r.state.bad_reasons = r.prepared.bad.slice(0, 1000);
             spool.writeState(entry.dir, r.state);
             await log(E, run_log, "philips_ct_bad_input", det, { ...note, entry: entry.name, bad: r.prepared.bad.length, of: r.prepared.dataLines, format_change: r.prepared.formatChange });

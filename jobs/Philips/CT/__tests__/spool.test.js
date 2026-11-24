@@ -143,10 +143,15 @@ test("completion: a format change sets the seen-hash, never the done-hash", asyn
   const root = tmpRoot();
   const sp = new Spool({ sme: "SME00001", root, now: fixedNow });
   const { dir } = sp.spoolSnapshot("EALInfo.csv", BUF, "eal");
-  const st = committedState(sp, dir, { ids: [], eal_ids: [], classification: "no_eal_rows", bad_lines: 20, format_change: "header" });
+  // A header change has no bad lines, only format_change: it must still be retained (rehearsal s5).
+  const st = committedState(sp, dir, { ids: [], eal_ids: [], classification: "no_eal_rows", bad_lines: 0, format_change: "header does not match the expected table" });
   const calls = [];
   await sp.finish(dir, st, { setDone: async () => calls.push("done"), setSeen: async () => calls.push("seen") });
   assert.deepStrictEqual(calls, ["seen"]);
+  const retained = fs.readdirSync(path.join(root, "retained/philips_ct/SME00001"));
+  assert.strictEqual(retained.length, 1);
+  const reasons = JSON.parse(fs.readFileSync(path.join(root, "retained/philips_ct/SME00001", retained[0], "reasons.json"), "utf8"));
+  assert.strictEqual(reasons.format_change, "header does not match the expected table");
 });
 
 test("entries: oldest first across files; capacity counts every area", () => {

@@ -9,7 +9,7 @@
 // - An invalid zone string -> host_datetime NULL; the caller logs an ERROR (Q33).
 // Pure: no I/O.
 
-const { DateTime, IANAZone } = require("luxon");
+const { IANAZone } = require("luxon");
 
 const DEFAULT_ZONE = "America/New_York";
 
@@ -21,6 +21,46 @@ function isValidZone(timeZoneId) {
   return IANAZone.isValidZone(zoneOf(timeZoneId));
 }
 
+// Per (zone, wall minute): the chosen offset and gap shift. Transitions fall on minute boundaries,
+// so every wall time in the same minute resolves the same way; the cache makes a file of tens of
+// thousands of rows cost a few hundred zone lookups instead of several per row.
+const cache = new Map();
+// IANAZone.isValidZone builds an Intl.DateTimeFormat on every call (~0.2 ms): cache it per name.
+const validity = new Map();
+function validZone(name) {
+  let v = validity.get(name);
+  if (v === undefined) {
+    v = IANAZone.isValidZone(name);
+    validity.set(name, v);
+  }
+  return v;
+}
+// A zone's UTC offset at an instant, cached per quarter hour of UTC: every IANA transition since
+// 1970 falls on a quarter-hour boundary, so the offset is constant within each quarter hour.
+const offsetCache = new Map();
+function cachedZone(name) {
+  const zone = IANAZone.create(name);
+  return {
+    offset(ts) {
+      const k = `${name}|${Math.floor(ts / 900000)}`;
+      let o = offsetCache.get(k);
+      if (o === undefined) {
+        o = zone.offset(Math.floor(ts / 900000) * 900000);
+        if (offsetCache.size > 200000) offsetCache.clear();
+        offsetCache.set(k, o);
+      }
+      return o;
+    },
+  };
+}
+const pad = (n, w = 2) => String(n).padStart(w, "0");
+function isoWithOffset(local, offsetMin) {
+  const d = new Date(local); // the wall clock, read as UTC
+  const sign = offsetMin < 0 ? "-" : "+";
+  const a = Math.abs(offsetMin);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.${pad(d.getUTCMilliseconds(), 3)}${sign}${pad(Math.floor(a / 60))}:${pad(a % 60)}`;
+}
+
 /**
  * @param {string} wall  "yyyy/MM/dd HH:mm:ss.SSS" (no suffix)
  * @param {string|null} timeZoneId
@@ -28,11 +68,14 @@ function isValidZone(timeZoneId) {
  */
 function hostDatetime(wall, timeZoneId) {
   const zoneName = zoneOf(timeZoneId);
-  if (!IANAZone.isValidZone(zoneName)) return { value: null, error: `invalid time zone ${JSON.stringify(timeZoneId)}` };
-  const zone = IANAZone.create(zoneName);
-  const naive = DateTime.fromFormat(wall, "yyyy/MM/dd HH:mm:ss.SSS", { zone: "UTC" });
-  if (!naive.isValid) return { value: null, error: `invalid wall time ${JSON.stringify(wall)}` };
-  const local = naive.toMillis(); // the wall clock read as if it were UTC
+  if (!validZone(zoneName)) return { value: null, error: `invalid time zone ${JSON.stringify(timeZoneId)}` };
+  const m = /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3})$/.exec(wall);
+  if (!m) return { value: null, error: `invalid wall time ${JSON.stringify(wall)}` };
+  const local = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6], +m[7]); // the wall clock read as if it were UTC
+  const key = `${zoneName}|${Math.floor(local / 60000)}`;
+  const hit = cache.get(key);
+  if (hit !== undefined) return { value: isoWithOffset(local + hit.shift, hit.offset) };
+  const zone = cachedZone(zoneName);
   // Candidate offsets: the zone's offsets a day either side cover every transition (minutes).
   const offsets = [...new Set([zone.offset(local - 86400000), zone.offset(local + 86400000), zone.offset(local)])];
   const valid = offsets
@@ -45,7 +88,11 @@ function hostDatetime(wall, timeZoneId) {
   } else {
     ts = local - zone.offset(local - 86400000) * 60000; // the gap: the offset from before
   }
-  return { value: DateTime.fromMillis(ts, { zone }).toISO() };
+  const offset = zone.offset(ts);
+  const shift = ts + offset * 60000 - local; // nonzero only in a gap (the wall time shown moves)
+  if (cache.size > 100000) cache.clear();
+  cache.set(key, { offset, shift });
+  return { value: isoWithOffset(local + shift, offset) };
 }
 
 module.exports = { DEFAULT_ZONE, hostDatetime, isValidZone, zoneOf };

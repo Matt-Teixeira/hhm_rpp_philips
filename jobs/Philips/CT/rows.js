@@ -11,7 +11,6 @@
 //
 // Pure: no I/O. host_datetime and capture_datetime are added elsewhere (time.js, ingest.js).
 
-const { DateTime } = require("luxon");
 
 const HEADERS = {
   eal: ["DTime", "Controller", "DataType", "LogNumber", "TmStamp", "ERR_TYPE", "ErrNum", "vxwErrNo", "File", "Line", "Param1", "Param2", "Info", "EalTime"],
@@ -41,23 +40,28 @@ function headerKind(header) {
   return null;
 }
 
+/** A real calendar date and time? (Plain arithmetic: luxon's fromFormat costs ~0.2 ms a call.) */
+function realDateTime(y, mo, d, h, mi, s) {
+  if (mo < 1 || mo > 12 || d < 1 || h > 23 || mi > 59 || s > 59) return false;
+  const dim = [31, (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0 ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+  return d <= dim;
+}
+
 /** Parse and check a key. @returns {{host_date, host_time, wall} | {error}} wall = without suffix. */
 function parseKey(key) {
   if (key === null) return { error: "key is NULL" };
   const m = KEY_RE.exec(key);
   if (!m) return { error: "key format" };
   const wall = `${m[1]} ${m[2]}`;
-  const dt = DateTime.fromFormat(wall, "yyyy/MM/dd HH:mm:ss.SSS", { zone: "UTC" });
-  // Round trip: luxon normalises some values (24:00:00.000 -> the next day), so require identity.
-  if (!dt.isValid || dt.toFormat("yyyy/MM/dd HH:mm:ss.SSS") !== wall) return { error: "key is not a real date and time" };
+  // Exact: no normalisation (24:00:00.000 and 2026/02/30 are rejected, not rolled over).
+  if (!realDateTime(+wall.slice(0, 4), +wall.slice(5, 7), +wall.slice(8, 10), +wall.slice(11, 13), +wall.slice(14, 16), +wall.slice(17, 19))) return { error: "key is not a real date and time" };
   return { host_date: m[1], host_time: m[2] + (m[3] || ""), wall };
 }
 
 function timeText(v, name) {
   if (v === null) return { value: null };
   if (!NEW_TIME_RE.test(v)) return { error: `${name} is not YYYY-MM-DD HH:MM:SS` };
-  const dt = DateTime.fromFormat(v, "yyyy-MM-dd HH:mm:ss", { zone: "UTC" });
-  if (!dt.isValid || dt.toFormat("yyyy-MM-dd HH:mm:ss") !== v) return { error: `${name} is not a real date and time` };
+  if (!realDateTime(+v.slice(0, 4), +v.slice(5, 7), +v.slice(8, 10), +v.slice(11, 13), +v.slice(14, 16), +v.slice(17, 19))) return { error: `${name} is not a real date and time` };
   return { value: v };
 }
 
