@@ -33,8 +33,15 @@
     projects new rows through the old pipeline and reproduces 117,270 of
     117,274 stored rows. It adds durable retention of bad input, a
     deploy drain, a reconciled rollback and a commit deadline before the
-    alert processor runs. **Q27–Q33 AGREED 2026-11-24** (as recommended);
-    next is Codex round 2. Build from 2026-11-24 18:53 UTC;
+    alert processor runs. **Q27–Q33 AGREED 2026-11-24** (as recommended).
+    Codex round 2 found 2 P1 and 5 P2 issues in how they were to be
+    built (§9.10). The design is revised again: every changed snapshot is
+    spooled until committed and saved, the rollback preserves the whole
+    published set under the collector's lock, the alert window rests on
+    a measured assumption with re-stamp recovery, and NULL time text is
+    an ambiguous class. **Q34–Q37 AGREED 2026-11-24** (as recommended);
+    next is Codex round 3.
+    The build waits for the review to close;
   - the mapping (PCT-2a): **AGREED 2026-11-20** (§7.7 Q13–Q18, as
     drafted). It becomes `insight/philips_ct/rules.js` in PCT-2;
   - the parser fix (PCT-1b) is built after 2026-11-24 18:53 UTC (Q3) and
@@ -933,7 +940,9 @@ real-data equivalence was rerun.
 
 **Status:** Q19–Q26 were AGREED on 2026-11-20. Then Codex's design review (round 1, §9.9) found
 3 P1 and 6 P2 issues. The design below is revised for them, and **Q27–Q33 (§9.7) were AGREED
-on 2026-11-24, as recommended**. Where they change an agreed answer, it is marked as superseded. No code is changed
+on 2026-11-24, as recommended**. Round 2 (§9.10) found 2 P1 and 5 P2 issues in how those
+answers were to be built; the design is revised again, and **Q34–Q37 (§9.7) were AGREED on
+2026-11-24, as recommended**. Where they change an agreed answer, it is marked as superseded. No code is changed
 before 2026-11-24 18:53 UTC (Q3). Everything below was gathered read-only on 2026-11-20: prod DB through `scripts/q.js`, prod files and
 `/home/prod/alert-processor` read, nothing written to the DB, Redis or any file outside the
 evidence folder. Evidence: `~/philips_ct_evidence/pct1b/` (README).
@@ -985,7 +994,7 @@ Sources: the catalog, `pg_stat_statements` since 2026-10-23, a code search of `~
 
 | Reader | What it reads | What PCT-1b changes for it |
 |---|---|---|
-| **alert-processor** (prod cron `24,54`; 1,373 calls) | `SELECT *` of rows with `capture_datetime` in the last 30 min, for `process_log` systems. It tests each row against the system's enabled models: 13 per collected system, all `err_number contains` (27,624 rows, 14,322 enabled) | **Matching: nothing.** Events rows have `err_number` NULL before and after, so they never match. **Volume:** each Events row is still tested and logged as untested (a WARN per model). Events rows per run grow about 2.2× (27,824 vs 12,627 in SME20598's window), so CT rows per run grow about 45%. **Timing:** a CT transaction must commit before the alert processor starts at `:24`, or its rows fall outside the next 30-min window and are never tested. Enforced by a deadline, not just a budget (Q31, §9.5) |
+| **alert-processor** (prod cron `24,54`; 1,373 calls) | `SELECT *` of rows with `capture_datetime` in the last 30 min, for `process_log` systems. It tests each row against the system's enabled models: 13 per collected system, all `err_number contains` (27,624 rows, 14,322 enabled) | **Matching: nothing.** Events rows have `err_number` NULL before and after, so they never match. **Volume:** each Events row is still tested and logged as untested (a WARN per model). Events rows per run grow about 2.2× (27,824 vs 12,627 in SME20598's window), so CT rows per run grow about 45%. **Timing:** a row is tested only if some alert-processor CT query sees it committed while its `capture_datetime` is still inside that query's 30-min window (`capture_datetime > NOW() - 30 min`, `NOW()` on the DB clock). A commit after the `:24` query's snapshot, with a capture time before it, is never tested. The coverage rule, its measured assumption and the recovery are in §9.5 `coverage.js` (Q31, revised by Q36). `alert.detections` has no cross-run dedupe (its key includes `run_id`), so a row tested twice gives two detections |
 | `log.log_recent_files` view | the newest `host_datetime` per system | nothing, except that `host_datetime` in the DST hour becomes deterministic (§9.5) |
 | `alert.offline_hhm_conn` | upserted by the EAL ingest with the newest `host_datetime` | same meaning, made robust (Q32): upserted in the same transaction as the EAL insert, and never moved backwards (`GREATEST`), so a replay or an older backlog can't make a system look offline |
 | archive job (`fse_dispatch` `archive-partitions.sql`) | moves whole partitions | nothing |
@@ -1033,13 +1042,26 @@ row at the same key in one of two ways:
 
 Each stored row is consumed at most once (a multiset).
 
-**Provenance comes from the row itself, with no stored state.** New rows store `eal_time` /
-`event_time` as the export's `YYYY-MM-DD HH:MM:SS` (Q28). Every old-parser row has the old
-`MM/dd/yy HH:mm:ss` text: all 6,525,121 EAL and 5,097,213 Events rows in `log` (`out/19`). The old
-regexes can't store a NULL time. So a stored row is an old-parser row exactly when its time
-column has the old text:
+**Provenance comes from the row itself, with no stored state (revised for round-2 finding 5,
+Q37).** New rows store `eal_time` / `event_time` as the export's `YYYY-MM-DD HH:MM:SS` (Q28), or
+NULL when the source field is NULL. The MDB columns are nullable (`TIMESTAMP` without `NOT NULL`);
+the copies have 0 NULL. `rows.js` rejects any other time text as a bad record, so a new row is
+always new-form or NULL. A stored row's time text puts it in one of three classes:
+- **old form** `MM/dd/yy HH:mm:ss`: an old-parser row. It can match only the projection (a). All
+  6,525,121 EAL and 5,097,213 Events rows in `log` today (`out/19`);
+- **new form:** a new-parser row. It can match only the new representation (b);
+- **anything else, NULL included: ambiguous.** It can match (a) or (b). **The old EAL regex can
+  store NULL** (round 2; the earlier claim that it can't was wrong): its `eal_time` capture is
+  `.*?`, so an `Info` containing `","` (exported as `"alpha"",""beta"`) ends the match early, with
+  `info = alpha"` and `eal_time` empty → NULL. Reproduced with the repo's regex. The projection
+  reproduces that row, so (a) still matches it. The Events regex requires a dated `event_time`, so
+  the old parser can't leave an ambiguous Events row.
+
+An ambiguous stored row suppresses an incoming row only if that row's projection or new form is
+identical to it, so the cost is at most a revision that happens to equal the stored row. Kept:
 - no boundary to set, lose or move;
-- it still holds if a rollback lets the old parser store more rows (§9.4).
+- it still holds if a rollback lets the old parser store more rows (§9.4), NULL-time EAL rows
+  included.
 
 **The projection, checked on the copies** (`scripts/legacy_projection.js`, `out/18`):
 - **A. The rebuilt plain record equals the real `mdb-export` record** on every EAL row. For
@@ -1070,7 +1092,10 @@ isn't stored. No such pair exists in the copies.
 - **The other direction:** an old row the projection can't reproduce is simply not matched, so
   the new row is stored next to it (a duplicate in the old shape). That happened 0 times on the
   copies.
-- The ingest counts both cases per run in its log.
+- **Neither case can be counted** from lossy rows alone (round 2). The ingest logs what it can
+  observe, per run and file: rows matched under (a), of which I6 wildcard matches; under (b);
+  ambiguous matches; and rows inserted. The I6 wildcard applies only to an old-form stored row
+  whose every other projected column matches; a date-shaped `eal` alone is not enough.
 
 ### 9.4 Switching from `.output` to `.csv`, deploying, and rolling back
 
@@ -1105,32 +1130,55 @@ isn't stored. No such pair exists in the copies.
   If a cron start falls between steps 2 and 3, the new code sees `.output` names and skips them:
   harmless. The old code never meets `.csv` names. Nothing old can still be running, so the two
   parsers never write at the same time.
-- **Rollback, with reconciliation (Q30; review finding 3).** Setting the old `.output` offsets
-  to the end of the file is only safe if the current snapshot was fully ingested. Otherwise its
-  unread rows would be skipped. So:
-  1. **Stop CT:** comment out the CT cron line and wait until `pgrep` is empty.
-  2. **Check:** run `node tooling/philips_ct_rollback_check.js` (new, read-only). Per system and
-     file it compares the current `.csv`'s sha256 with the Redis done-hash, and checks that the
-     `.csv` and `.output` came from the same publish (`Logger.mdb` mtime, and the files' mtimes
-     within the same grab). It prints, per file, `RECONCILED` or `NOT RECONCILED`, plus the exact
-     commands:
-     - `cp` of each not-reconciled `.csv` into the retained store (§9.5), for a later replay;
-     - `redis-cli SET <SME>.<file>.output <current size>` for every file.
-  3. **You run those commands.**
+- **Rollback: preserve the whole published set, under the collector's lock (Q30, revised by Q35;
+  round-2 finding 1).** Setting an `.output` offset to the end of the file skips every row in it
+  that the new parser hasn't handled. A collector publish is five separate `mv -fT`s
+  (`Logger.mdb`, `EALInfo.output`, `Events.output`, `EALInfo.csv`, `Events.csv`, in that order;
+  `phil_ct_data_grab_1.sh` lines 152–162), and a failure leaves whatever prefix was published. So
+  an `.output` can be newer than the `.csv` beside it, and then no `.csv` holds its rows. And
+  publish identity can't be read from mtimes. So:
+  1. **Stop CT:** comment out the CT cron line and wait until `pgrep -af 'index.js PHILIPS_CT'`
+     is empty.
+  2. **Check (read-only):** `node tooling/philips_ct_rollback.js check` prints per system and
+     file what `apply` would do.
+  3. **Apply (you run it):** `node tooling/philips_ct_rollback.js apply`. Per system, all while
+     holding the collector's own lock (`flock -n <dir>/.grab.lock`, held by a grab from its
+     start until after its publish; a grab that finds it taken exits 75 and changes nothing):
+     - wait for a running grab to release the lock (up to its 615 s deadline);
+     - copy the five published files, whatever their state, to
+       `retained/philips_ct/<SME>/rollback_<utc>/` with `manifest.json` (name, size, sha256);
+       `fsync` each file and the folder; read each copy back and compare its sha256;
+     - per `.output`, prove coverage from content: **covered by `Logger.mdb`** if the
+       collector's legacy commands, run on the preserved `Logger.mdb`, give the preserved
+       `.output` byte for byte; or **covered by `.csv`** if the preserved `.csv` is complete
+       (its sha256 is the done-hash, nothing pending in the spool) and the `.output` rebuilt
+       from it (the plain records of §9.3 A, then the legacy steps) is byte-identical. Events
+       rows with `ERROR_BLOB` can't be rebuilt from the `.csv` (BLOB is stripped), so they need
+       the `Logger.mdb` route;
+     - only for a covered `.output`: `SET <SME>.<file>.output <size of the preserved copy>`.
+       Then release the lock.
+
+     An `.output` that can't be preserved, verified or proved covered keeps its offset; the tool
+     prints `UNCOVERED` with the evidence and exits nonzero, and the rollback of that system
+     waits for your decision (it takes two consecutive partial publishes, both logged by the
+     collector as errors).
   4. **Restore:** the old `config.log` names, then the previous `PROD` commit, then the cron line.
-  5. **After the fix:** replay the retained snapshots with the new parser. Rows the old parser
-     stored in the meantime still have the old time text, so rule P matches them, and the
-     replay adds only what is missing.
+  5. **After the fix (replay):** `PHILIPS_CT_REPLAY retained/philips_ct/<SME>/rollback_<utc>/`
+     ingests both preserved `.csv` files **and** a fresh `-e` export of the preserved
+     `Logger.mdb` (the collector's exact `mdb-export -e -b strip -T '%Y-%m-%d %H:%M:%S'` and
+     `tr -d '\000'`). Rows the old parser stored in the meantime are old-form or ambiguous, so
+     rule P matches them, and the replay adds only what is missing.
 - **Redis (Q22, agreed):**
   - the `.output` offset keys are no longer read or written, and keep their last values until
     a rollback resets them (above);
   - new keys `<SME>.EALInfo.csv` / `<SME>.Events.csv` hold `{size, sha256}` of the last file
-    fully handled (ingested, or partly ingested with its bad lines retained). An identical file
-    is skipped. This is only an optimisation: a lost key means one more diff and no insert.
+    **completed** (Q34): committed, its `log.saved_files` insert acknowledged, and, with bad
+    lines, retained. An identical file is skipped only if nothing for it is pending in the
+    spool. A lost key means one more diff and no insert.
 - **The `.output` files (Q26, agreed):** the collector keeps writing them and nothing reads them.
   `log.saved_files` stops getting them. After 5 clean days, PCT-C2 removes the legacy exports.
 
-### 9.5 Design (revised after review round 1)
+### 9.5 Design (revised after review rounds 1 and 2)
 
 New code under `jobs/Philips/CT/`. The byte-offset path is removed: `eal_parser.js`,
 `events_parser.js`, and the CT use of `data_acquisition/Philips_CT.js`.
@@ -1141,46 +1189,116 @@ New code under `jobs/Philips/CT/`. The byte-offset path is removed: `eal_parser.
 | `rows.js` | **Validate and build.** Exact header per table. Per record: field count; key `yyyy/MM/dd HH:mm:ss.SSS[__NN]`, a real calendar date and time (luxon `isValid`; `2026/02/30` is rejected); for Events, at least one stored Events column set (review finding 5). Output: `host_date` / `host_time` (suffix kept), `message` = `Msg` whole, `eal` = `EAL` as given. **Q28 text:** `eal_time` / `event_time` = the export's `YYYY-MM-DD HH:MM:SS`, `Info` right-trimmed (`/\s+$/`, all-blank → NULL), everything else exact. Each built row is checked to classify back into its own kind |
 | `legacy.js` | **Rule P's projection** (§9.3), using the repo's real `ct_eal_v_2`, `ct_events_v2` and `remove_dub_quotes`, plus the collector's `tr` set and `awk` reorder |
 | `time.js` | **`host_datetime`** from the wall clock and the site zone (`America/New_York` if NULL, as today). The repeated DST hour takes the earlier offset (Q23, agreed). **An invalid zone string** gives `host_datetime` NULL and an ERROR (Q33); the candidate read covers NULL |
-| `ingest.js` | **Per file, one transaction:** see the five steps below the table |
-| `retain.js` | **Durable retention and replay (Q29; review finding 2):** see below the table |
-| `index.js` | **Per configured file:** missing → silent skip; not `.csv` → WARN. Then read the file **once into a buffer**, and sha256 it. An unchanged hash → skip. Otherwise validate, ingest, retain if needed, set the hash, and save **the same buffer** to `log.saved_files` (`gzip_n_save` gets the buffer, not the path, which the collector may have replaced since; finding 2). Also the replay entry point: `node index.js PHILIPS_CT_REPLAY <retained file>` |
+| `ingest.js` | **Per file, one transaction:** see the steps below the table |
+| `spool.js` | **Durable pending work, retention and replay** (Q29, extended by Q34; round-2 findings 2, 6, 7): see below the table |
+| `save.js` | **Archival, awaited:** gzip the spooled bytes and `INSERT` them into `log.saved_files`; awaited, errors propagated (round-2 finding 6). The shared `util/gzip_file.js` doesn't await or return its insert (line 64) and swallows errors, so the CT path doesn't use it. The other Philips jobs keep it (out of scope; `hhm_rpp_ge` fixed its copy on 2026-11-23) |
+| `coverage.js` | **The alert window** (Q31, revised by Q36; round-2 findings 3, 4): the run phase, the deadline, late-commit re-stamp; see below the table |
+| `index.js` | **Per configured file:** missing → silent skip; not `.csv` → WARN. Read the file **once into a buffer** and sha256 it. Unchanged hash and nothing pending → skip. Otherwise **spool it first**, then process the system's pending entries oldest first: validate, ingest, save, retain if needed, complete. Replay entry point: `node index.js PHILIPS_CT_REPLAY <retained file or rollback folder>` |
 
 **`ingest.js`, per file, one transaction:**
-1. **Lock without waiting:** `pg_try_advisory_xact_lock(system, kind)`. If another writer holds
-   it, skip the file this run.
-2. **Capture time:** `capture_datetime` = the time the lock was taken.
+1. **Phase, then lock without waiting:** the run must be inside its phase (`coverage.js`). Then
+   `pg_try_advisory_xact_lock(system, kind)`. If another writer holds it, the entry stays
+   pending for the next run.
+2. **Capture time:** the DB's `clock_timestamp()` when the lock was taken, written to the
+   entry's `state.json` before any insert.
 3. **Candidate read** (finding 4): `system_id = $1 AND (host_datetime within the file's span ±2
    days OR host_datetime IS NULL) AND host_date = ANY(file dates) AND <kind predicate>`. This is
    complete for every accepted key: a stored `host_datetime` is either NULL or the raw key read
-   in some IANA zone (−12 h to +14 h, plus a 1 h DST fold).
+   in some IANA zone (−12 h to +14 h, plus a 1 h DST fold). The span comes from the raw keys'
+   wall-clock values, never from the computed `host_datetime`, so an invalid zone (every
+   incoming `host_datetime` NULL) still bounds the read and finds earlier non-NULL rows.
 4. **Match and insert:** a multiset match under rule P, then inserts in batches of 5,000.
 5. **EAL only:** upsert `alert.offline_hhm_conn` with `GREATEST(stored, newest inserted
-   host_datetime)` (Q32). Then commit.
+   host_datetime)` (Q32). Then `COMMIT`, then read the DB time and record `committed` in
+   `state.json` (`coverage.js` checks it).
 
-- **The deadline** (Q31; finding 8): commit before the next alert-processor start (minutes 24
-  and 54, a named constant) minus 60 s. Each statement gets
-  `SET LOCAL statement_timeout` = the time left. A file isn't started with less than 30 s left.
-  On expiry: roll back, don't set the hash, and the next run retries. Its rows then get the
-  later capture time, so the next alert run sees them.
 - **The kind predicate** is identical in SQL and JS: Events if
   `num_nonnulls(type, level, module, time_stamp, message, eal, event_time) > 0`, else EAL.
 
-**`retain.js`, durable retention and replay:**
-- **What gets retained:**
-  - a file with bad records keeps its good ones: they're ingested, the file is logged as
-    partial with an ERROR, and the **exact bytes** are retained with a `reasons.json` (line
-    number, field, reason for each bad record);
-  - a file with a wrong header, or with more than max(10, 1%) bad lines, is treated as a format
-    change: nothing is ingested, the bytes are retained, and its hash isn't set (an ERROR every
-    run).
-- **Where:** `retained/philips_ct/<SME>/<utc>_<sha12>_<file>` in the app directory (gitignored).
-  Each distinct content is stored once, never deleted automatically, and listed in the ERROR note.
-- **Replay** ingests a retained file through the same path. Dedupe makes it idempotent. A fully
-  replayed file moves to `replayed/`.
+**`coverage.js`, the alert window (Q31, revised by Q36; round-2 findings 3 and 4).** A row with
+capture time `c` and commit time `t` is tested iff some alert-processor CT query with snapshot
+`s` has `t < s` and `s − 30 min < c`. The writer can't see `s`, and a timeout can't bound a
+commit: PostgreSQL 14 disables `statement_timeout` before `CommitTransactionCommand()`
+(`postgres.c`, `finish_xact_command`). So the design states an assumption, keeps to a phase in
+which it suffices, recovers when a commit is late, and audits the assumption:
+- **Assumption D:** each alert-processor run's CT query takes its snapshot between its nominal
+  minute N (`:24`, `:54`) and N + 5 min. Measured (`sql/10`, `out/21`; 14 days, 672 runs, 48 a
+  day, none missed): every run *ended* 12–53 s after its minute (median 16 s, p99 37 s), so its
+  queries started earlier still.
+- **Phase:** an ingest (cron, manual or replay) may take its lock only when the DB time is in
+  `[N + 5 min, N_next − 2 min)`: minutes `:29–:52` and `:59–:22`. The cron runs at `:18` and
+  `:48` are inside. Outside it the entry stays pending. Under D, a row captured in the phase and
+  committed before `N_next` is seen by the `N_next` query; Codex's manual run at `:24:10` is
+  refused.
+- **One clock:** every time here is the DB's `clock_timestamp()`, read when needed (the reader's
+  `NOW()` is the DB clock too). The app clock isn't used, so app/DB skew doesn't matter.
+- **Deadline, as a resource control only:** before each statement and before `COMMIT`, the run
+  reads the DB time and rolls back at `N_next − 60 s` or later. `SET LOCAL statement_timeout` =
+  the time left bounds each statement. Neither bounds the commit itself.
+- **A late or uncertain commit is re-stamped.** After `COMMIT` returns, the run reads the DB time
+  `t1`. The commit is late if `t1 ≥ N_next`. It is uncertain if `COMMIT` errored or the
+  connection was lost; the run (or the next one, from `state.json`) checks on a new connection
+  whether rows with the recorded capture time exist. A late or committed-uncertain entry is
+  marked `restamp_due`. The next run inside the phase, in its own transaction, runs
+  `UPDATE … SET capture_datetime = <its capture time> WHERE system_id = $1 AND capture_datetime =
+  <recorded> AND <EAL kind>`. Only EAL rows: every enabled CT model tests `err_number`, which is
+  NULL in Events. The re-stamp is itself checked the same way. If the first commit was in fact
+  seen, its EAL rows are tested twice and give two detections (counted; accepted).
+  `capture_datetime` is the partition key, so across a month boundary the `UPDATE` moves rows
+  between partitions (PostgreSQL 11+; rehearsed in 1b.2).
+- **Audit:** `tooling/philips_ct_alert_coverage.js` (read-only) compares each CT commit's capture
+  and commit times with the alert-processor runs in `util.app_run_logs` (each run's start ≤
+  snapshot ≤ its end) and lists EAL rows that D doesn't cover. 1b.6 runs it daily. A violation of
+  D is repaired by hand with the same `UPDATE`.
+- **Not changed:** the alert processor. A checkpoint in its reader would remove the assumption,
+  but it's a change to another app, and every log table it reads has the same window (Q36).
+
+**`spool.js`, durable pending work, retention and replay (Q29, extended by Q34; round-2 findings
+2, 6, 7).** The collector replaces each file every grab, and the buffer resets. So a changed
+snapshot is copied to local disk before anything can fail, and stays there until every
+obligation is acknowledged:
+- **Spool:** the buffer goes to `spool/philips_ct/<SME>/<file>/<utc>_<sha12>` in the app
+  directory (gitignored): temp name, `fsync`, rename, `fsync` the folder. A `state.json` beside it
+  moves `spooled` → `committed` (capture and commit times) → `saved` → done, each write atomic in
+  the same way. An identical sha256 already pending isn't written again.
+- **Processing:** each run takes a system's pending entries oldest first. Rule P's multiset
+  match makes any order and any repeat idempotent: a repeat inserts nothing, and an older
+  snapshot after a newer one inserts only rows really missing (a revision is kept, Q6).
+- **Completion:** an entry is done when its transaction has committed **and** its
+  `log.saved_files` insert is acknowledged, and, with bad lines, its retention is written. Only
+  then is the done-hash set and the spool copy deleted (`log.saved_files` now holds the exact
+  bytes). A commit with a failed save stays pending: the next run's diff inserts nothing and the
+  save is retried. A death between the save and its state write can save one snapshot twice
+  (harmless, counted).
+- **What it covers** (finding 2): a deadline rollback, a failed batch, a missing partition, a
+  busy lock, a phase skip, a crash at any step, with the original replaced in the meantime.
+- **Bad input (Q29, as agreed):**
+  - a file with bad records has its good ones ingested and is logged as partial with an ERROR.
+    Its spool entry moves to `retained/philips_ct/<SME>/` with a `reasons.json` (line, field,
+    reason per bad record) **before** the entry can complete;
+  - a wrong header, or more than max(10, ⌊1% of data lines⌋) bad lines, is a format change:
+    nothing is ingested. Data lines are the physical lines after the header, not counting one
+    final empty line (so 11 bad lines of 1,000 reject the file, and 10 don't; 11 of 1,100 don't;
+    12 of 1,100 do). The bytes are saved to `log.saved_files` and moved to `retained/` with
+    `reasons.json`; an ERROR is logged every run, and the done-hash isn't set (a separate
+    "seen" hash stops the same bytes being retained twice).
+- **Replay:** `PHILIPS_CT_REPLAY` ingests a retained file or a rollback folder (§9.4) through the
+  same path. A fully replayed file moves to `replayed/`. Retained and replayed files are never
+  deleted automatically (Q29).
+- **A failed spool write** (ENOSPC, permissions): the run still tries ingest and save from
+  memory. The file is done only if both succeed and it has no bad lines; otherwise no done-hash,
+  and an ERROR names the snapshot as **unspooled**: it is lost if the collector replaces it
+  before a later run succeeds.
+- **Capacity (finding 7):** every run measures `spool/`, `retained/` and `replayed/` (bytes,
+  count, oldest pending). WARN at 1 GB in total or a pending entry older than 6 h; ERROR at 5 GB
+  or 24 h. The owner is you, and the response is in 1b.6. For scale: a file that keeps failing is
+  retained at every changed grab, up to about 160 MB a day at 3.3 MB; the volume has 1.1 TB free
+  (2026-11-24). A healthy run leaves the spool empty.
 
 - **DRY_RUN:** the existing guard refuses `db.tx`. Under `DRY_RUN=1`, `ingest.js` takes no lock
   and opens no transaction, runs the candidate read as a plain `SELECT`, and records the inserts
-  and the upsert. Retention writes and the Redis `SET` are recorded, not done.
+  and the upsert. Spool, state and retention writes, the save, the re-stamp and the Redis `SET`
+  are recorded, not done. The phase is checked and reported, not enforced.
 - **Not changed:**
   - `scan_seconds` (CT never wrote `logfile_event_history_metadata`);
   - the table and its indexes;
@@ -1205,7 +1323,7 @@ New code under `jobs/Philips/CT/`. The byte-offset path is removed: `eal_parser.
     for the busiest system (`sql/09`, `out/20`), via a `BitmapOr` on the `host_datetime` indexes;
   - the earlier ±1-day form was 18–69 ms (`out/09`). End to end the read took 1.9 s (`out/11`).
 - **Per run, worst case** (all 9 systems changed): about 30–40 s. An unchanged file costs one
-  sha256. The deadline caps any run at the next alert window anyway.
+  sha256. The phase and the deadline end any run before the next alert window (§9.5).
 - **Not measured yet** (finding 8):
   - the first full-buffer write, up to about 31k rows per file, which the old parser also did on
     every reset;
@@ -1250,14 +1368,15 @@ review, as marked:
     - It keeps the 4-digit year, and it's the exact source text.
     - Cost: the two columns hold the old format before the deploy and the new one after. Nothing
       reads them today (§9.2).
-29. **Bad input. Recommendation: quarantine and durable retention (§9.5).**
+29. **Bad input. Recommendation: quarantine and durable retention (§9.5).** *(Extended by Q34
+    to all pending input.)*
     - Bad records are set aside and the good ones ingested, with an ERROR.
     - A wrong header or more than max(10, 1%) bad lines retains the whole file and ingests
       nothing.
     - The exact bytes are always kept until replayed, and the same bytes go to `log.saved_files`.
-30. **Deploy and rollback. Recommendation: the drain and the reconciled rollback in §9.4,** with a
+30. *(The rollback part is revised by Q35.)* **Deploy and rollback. Recommendation: the drain and the reconciled rollback in §9.4,** with a
     read-only check tool that prints the commands for you to run.
-31. **The alert window. Recommendation: a no-wait lock and a commit deadline 60 s before the next
+31. *(Revised by Q36: a timeout can't enforce the commit deadline.)* **The alert window. Recommendation: a no-wait lock and a commit deadline 60 s before the next
     alert-processor start, retrying next run (§9.5).** Not chosen: a time budget with no
     enforcement.
 32. **`alert.offline_hhm_conn`. Recommendation:** upsert it inside the EAL transaction, never
@@ -1266,18 +1385,48 @@ review, as marked:
     ERROR. Keys, days and dedupe don't depend on it. Not chosen: falling back to
     `America/New_York` silently, which is right today only for the 4 Florida sites with NULL.
 
+**Round 3, after design review round 2: AGREED 2026-11-24** (your answers, as recommended):
+
+34. **Pending work and archival. Recommendation: spool every changed snapshot to local disk
+    first, and keep it until committed and saved (§9.5 `spool.js`).** Extends Q29 from bad input to
+    all input. The done-hash follows only a complete entry; the save is awaited; a completed
+    entry's local copy is deleted, because `log.saved_files` holds the bytes; WARN/ERROR
+    thresholds on disk use and age, owner you. Not chosen: retrying the current path name (the
+    snapshot is lost when the collector replaces it), or saving to `log.saved_files` before
+    ingest as the only copy (it fails exactly when the DB is down).
+35. **Rollback. Recommendation: the tool preserves and sets the offsets itself, under the
+    collector's lock (§9.4).** Changes Q30's "prints the commands for you to run": you still run
+    it, `check` then `apply`. It always preserves all five published files and verifies the
+    copies, and sets an offset only for an `.output` proved covered by content (a legacy
+    re-export of the preserved `Logger.mdb`, or a rebuild from a completed `.csv`, byte-equal).
+    Otherwise it stops for that system and you decide. Not chosen: printed commands run later (a
+    publish in between makes them refer to different files).
+36. **The alert window. Recommendation: assumption D (reader delay ≤ 5 min; measured ≤ 53 s), a
+    run phase on the DB clock, the deadline as a resource control, re-stamping the EAL rows of a
+    late or uncertain commit, and a read-only audit (§9.5 `coverage.js`).** Changes Q31, which
+    claimed a guarantee a timeout can't give. Cost: a rare double detection when an uncertain
+    commit was in fact seen, and `capture_datetime` on re-stamped rows is the re-stamp time.
+    Not chosen for PCT-1b: a checkpoint in the alert processor. It removes the assumption, but
+    it's another app's change, and every log table it reads has the same window. Worth its own
+    ticket.
+37. **Rows with NULL or unrecognised time text. Recommendation: an "ambiguous" class that can
+    match either form (§9.3).** New rows are only ever new-form or NULL (validated). Not chosen:
+    treating every non-old-form row as new (the old EAL regex can store NULL, so such rows
+    would be duplicated after a rollback), or a marker column (a schema change PCT-1b doesn't
+    make).
+
 ### 9.8 Steps and exit criteria
 
 | Step | Content | Exit | Earliest |
 |---|---|---|---|
 | **1b.0 Plan** | this section | Q19–Q26 AGREED | **done 2026-11-20** |
-| **1b.0r Design review** | round 1: `REVIEW-PCT1B-PLAN-CODEX.md` (3 P1, 6 P2), answered in §9.9. Round 2: the updated handoff → `REVIEW-PCT1B-PLAN-CODEX-2.md` | no open P1/P2, and Q27–Q33 AGREED (**done 2026-11-24**) | now, before 2026-11-24 |
-| **1b.1 Build** | `csv.js`, `rows.js`, `legacy.js`, `time.js`, `ingest.js`, `retain.js`, `index.js`, `tooling/philips_ct_rollback_check.js`; masked fixtures; `node --test` | **Decoder:** literal backslashes, `\\n` vs `\n`, doubled quotes, CRLF, tabs, adjacent escapes, a trailing lone backslash, empty vs NULL, non-ASCII, a bad-quote line. **Rows:** header, field count, key format, impossible dates, all-NULL Events payload, kind round-trip, Q28 text. **Legacy oracle** (finding 6): the projection against the **actual old regexes and helpers** on synthetic doubled quotes in `Info`, `File` and `ErrNum`, tabs, backslashes, Unicode whitespace, empty vs NULL, the I6 merge. **Transition identity** (finding 1): old split A → same A → changed B at the same key over separate snapshots; reset and clock reversal; a nonstandard `EAL` value; old and new candidates together; duplicate stored rows; order permutations. Assert which rows are inserted, not just totals. **Time:** DST both ways, NULL and invalid zones. Each test is checked to fail under a matching mutation. No network, no real DB, every child process bounded | after 2026-11-24 18:53 UTC, once you confirm the cutover closed |
-| **1b.2 Exactness and rehearsal** | throwaway PostgreSQL 14 (local `initdb`, socket only) with the real DDL: monthly partitions including a month boundary, the indexes, `alert.offline_hhm_conn`; the real parser code and SQL | **DB = MDB** for each copy on an empty DB, both tables: the multiset of (key, content) equals an independent reference (plain `mdb-export` → Python) under Q28/R2 text, including suffixed, comma, multi-line and the 43 `Series … cancelled` rows. **Re-run, Redis cleared:** 0 inserted. **Reset** (half a buffer, then the full one, then a disjoint one): 0 duplicates. **Production-shaped seed** (finding 7): only `log`-eligible old rows from `sql/05`, with their real capture times; inserts = **113,552** in total, matching the per-copy table in §9.3, with their identities checked. Then a repeat, a Redis loss and a changed snapshot. **Candidate SQL** (finding 4): stored NULL `host_datetime`, a zone change of 26 h, a suffixed key: each inserted row visible to its next read. **Transactions** (required addition 5): two connections on one file; a failure in a later batch; a kill before commit, after commit but before Redis, and after Redis but before the save; the deadline expiring; reader visibility at a simulated `:24`. **Retention:** a bad line among good ones; repeated failure, then the buffer replaced; a bad header; a save failure; the file replaced between read and save; replay after the original is gone. **Rollback rehearsal:** unprocessed new bytes, and after a validation failure; check-tool output; offset ordering; redeploy with existing hashes. Measured: the first full-buffer write and the lock behaviour | after 1b.1 |
+| **1b.0r Design review** | round 1: `REVIEW-PCT1B-PLAN-CODEX.md` (3 P1, 6 P2), answered in §9.9. Round 2: `REVIEW-PCT1B-PLAN-CODEX-2.md` (2 P1, 5 P2), answered in §9.10. Round 3: the updated handoff → `REVIEW-PCT1B-PLAN-CODEX-3.md` | no open P1/P2; Q27–Q33 AGREED (**done 2026-11-24**); Q34–Q37 AGREED (**done 2026-11-24**) | now |
+| **1b.1 Build** | `csv.js`, `rows.js`, `legacy.js`, `time.js`, `ingest.js`, `spool.js`, `save.js`, `coverage.js`, `index.js`, `tooling/philips_ct_rollback.js`, `tooling/philips_ct_alert_coverage.js`; masked fixtures; `node --test` | **Decoder:** literal backslashes, `\\n` vs `\n`, doubled quotes, CRLF, tabs, adjacent escapes, a trailing lone backslash, empty vs NULL, non-ASCII, a bad-quote line. **Rows:** header, field count, key format, impossible dates, all-NULL Events payload, kind round-trip, Q28 text. **Legacy oracle** (finding 6): the projection against the **actual old regexes and helpers** on synthetic doubled quotes in `Info`, `File` and `ErrNum`, tabs, backslashes, Unicode whitespace, empty vs NULL, the I6 merge. **Transition identity** (finding 1): old split A → same A → changed B at the same key over separate snapshots; reset and clock reversal; a nonstandard `EAL` value; old and new candidates together; duplicate stored rows; order permutations. Assert which rows are inserted, not just totals. **Time:** DST both ways, NULL and invalid zones. **Provenance** (round 2, addition 5): `Info` containing `","`; NULL source `EalTime` / `EventTime`; unrecognised time text; rows the old parser stores during a rollback; an invalid zone with every incoming `host_datetime` NULL (the span from raw keys finds earlier non-NULL rows). **Whole-pipeline oracle** (addition 7): the old collector's shell steps (the pre-PCT-C script, `sort` under the cron environment's locale) and the old parser's whole-file `/g` scan over sequential snapshots, against the per-row projection: byte tails starting inside a record, I6 consuming the next timestamp, an I6 record at EOF, changed adjacency between grabs. **Thresholds** (addition 6): 10 and 11 bad lines; 1% and one above on 999, 1,000, 1,001 and 1,100 lines. **Phase and deadline:** pure functions of DB time, both reader minutes, hour and day boundaries. **Spool state machine:** every transition and every crash point, with a fake filesystem that fails each write. Each test is checked to fail under a matching mutation. No network, no real DB, every child process bounded | after 2026-11-24 18:53 UTC, once you confirm the cutover closed |
+| **1b.2 Exactness and rehearsal** | throwaway PostgreSQL 14 (local `initdb`, socket only) with the real DDL: monthly partitions including a month boundary, the indexes, `alert.offline_hhm_conn`; the real parser code and SQL | **DB = MDB** for each copy on an empty DB, both tables: the multiset of (key, content) equals an independent reference (plain `mdb-export` → Python) under Q28/R2 text, including suffixed, comma, multi-line and the 43 `Series … cancelled` rows. **Re-run, Redis cleared:** 0 inserted. **Reset** (half a buffer, then the full one, then a disjoint one): 0 duplicates. **Production-shaped seed** (finding 7): only `log`-eligible old rows from `sql/05`, with their real capture times; inserts = **113,552** in total, matching the per-copy table in §9.3, with their identities checked. Then a repeat, a Redis loss and a changed snapshot. **Candidate SQL** (finding 4): stored NULL `host_datetime`, a zone change of 26 h, a suffixed key: each inserted row visible to its next read. **Transactions** (required addition 5): two connections on one file; a failure in a later batch; a kill before commit, after commit but before Redis, and after Redis but before the save; the deadline expiring; reader visibility at a simulated `:24`. **Pending work** (round 2, additions 2 and 6): a deadline rollback, a missing partition, a late-batch failure and a busy lock, each followed by a source reset with the original replaced: the exact accepted identities recovered from the spool; a crash after a partial ingest but before retention or the hash; a save failure, and a death after Redis but before the save, with the original replaced: `log.saved_files` ends with the exact bytes and the entry's state is right; ENOSPC, a permission failure and a death during a spool or retention write: the artifact and `reasons.json` recoverable, no done-hash. Assert bytes and states, not just row counts. **Retention:** a bad line among good ones; repeated failure, then the buffer replaced; a bad header; replay after the original is gone; capacity WARN/ERROR. **Alert coverage** (additions 3 and 4): a slow `COMMIT` (a test-only deferred constraint trigger that sleeps at commit time), a client pause between statements, a lost commit acknowledgment (the backend killed during `COMMIT`), runs outside the phase (Codex's `:24:10` timeline is refused), a simulated reader query at N + d for several d: every committed EAL row is either seen by a reader query or re-stamped and then seen; the re-stamp across a month boundary. **Rollback matrix** (finding 1, addition 1): the collector stopped after each of its five renames, and two consecutive partial publishes; files replaced between `check` and `apply`; a grab holding the lock; the copies verified before any offset changes; then the originals deleted and every row recovered from the preserved set by replay. `UNCOVERED` leaves the offset unchanged; a message alone isn't a pass. Offset ordering; redeploy with existing hashes. Measured: the first full-buffer write and the lock behaviour | after 1b.1 |
 | **1b.3 DRY_RUN** | `DRY_RUN=1` from the dev checkout against prod (read-only sessions) | (a) prod's files as they are: every CT file skipped silently, 0 writes, 0 CT errors. (b) `DEV_FILE_PATH` → the copies' `.csv` for SME20598 / SME18534 / SME18535: the planned inserts equal the "`log` only" rule-P counts (SME20598: 15,197 Events, 0 EAL; SME18534: 623 Events, 0 EAL; SME18535: 14,055 Events, 2 EAL, the revised rows) against the real stored rows, run time recorded. The parity check doesn't apply: `hhm_rpp` no longer runs CT, and MDB is the reference | after 1b.2 |
 | **1b.4 Code review** | `REVIEW-PCT1B-PARSER-HANDOFF.md` → Codex → `REVIEW-PCT1B-PARSER-CODEX.md`; fixes recorded here | the review closed; then commit with your OK | after 1b.3 |
 | **1b.5 Deploy** (you) | confirm `crontab -l` has no `hhm_rpp … philips_ct` line; the 2026-12 partition if it's December; promote `DEV` → `STAGING` → `PROD`; the drain (§9.4); pull; the `config.log` `UPDATE`; watch the next run | the first run: `PHILIPS_CT` warn/error 56 → 0 (all files missing, silent), nothing inserted | after 1b.4 |
-| **1b.6 Monitor** | 5 clean days; and once a CT system is reachable, its first `.csv` grab | 5 clean days of runs, no retained files. **On the first live capture:** DB = that grab's `Logger.mdb` (keys and content, both tables); 0 duplicates on the following runs; the commit before `:24`; the next alert-processor run tested the new rows; its run time recorded against the days before. Close-out needs the live capture (§6), so it waits on reachability (§8.1) | after 1b.5 |
+| **1b.6 Monitor** | 5 clean days; and once a CT system is reachable, its first `.csv` grab | 5 clean days of runs: the spool empty after every run, no retained files, no capacity WARN, the daily coverage audit clean. A capacity WARN/ERROR: you read `reasons.json`, fix or replay, and move old retained files elsewhere by hand. **On the first live capture:** DB = that grab's `Logger.mdb` (keys and content, both tables); 0 duplicates on the following runs; the coverage audit shows the next alert-processor run tested the new EAL rows; its run time recorded against the days before. Close-out needs the live capture (§6), so it waits on reachability (§8.1) | after 1b.5 |
 
 ### 9.9 Design review round 1 (Codex, 2026-11-20): what changed
 
@@ -1296,3 +1445,23 @@ mismatches after one-pass unescaping, and 0 unknown escape pairs.
 | 7 P2 | Seeding archived rows doesn't model the runtime read (113,552 vs 62,208) | **Agreed.** The rehearsal seeds `log`-eligible rows only, expected total 113,552; the all-history count is kept as a separate study (§9.3) |
 | 8 P2 | The alert-window budget isn't enforced | **Agreed.** No-wait lock, capture time at the lock, commit deadline before the next alert run, retry next run (§9.5, Q31). The heartbeat goes into the same transaction (Q32) |
 | 9 P2 | The keys are primary keys (`mdb-schema … postgres`) | **Agreed; corrected** in §9.1 (`out/17`). Multiset handling stays for stored history. DST tests use sequential snapshots |
+
+### 9.10 Design review round 2 (Codex, 2026-11-24): what changed
+
+Review: `REVIEW-PCT1B-PLAN-CODEX-2.md`. Verdict: revise before building. Codex independently
+re-projected the records rebuilt from the `.csv` files: 117,270 matches, 4 `Info` revisions,
+873 I6 wildcard matches. It found no counterexample to the I6 wildcard, and found the 1% / 10-line
+policy and a hash after a partial ingest reasonable once retention is durable and acknowledged.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 P1 | Rollback's EOF reset after a partial collector publish: the `.output` can be newer than any `.csv`, so preserving the `.csv` doesn't cover it; mtimes don't identify a publish; the collector keeps running | **Agreed.** The tool holds the collector's `.grab.lock`, preserves all five files with verified copies, sets an offset only for an `.output` proved covered by content, and stops on `UNCOVERED`. Replay includes a fresh export of the preserved `Logger.mdb` (§9.4, Q35) |
+| 2 P1 | A valid snapshot whose ingest keeps failing (deadline, batch, missing partition, busy lock) is lost when the buffer resets | **Agreed.** Every changed snapshot is spooled first and stays until committed and saved (§9.5 `spool.js`, Q34) |
+| 3 P2 | `statement_timeout` doesn't bound `COMMIT` (PostgreSQL 14 disables it first), nor client time | **Agreed.** The deadline is a resource control on the DB clock; a late or uncertain commit is detected and its EAL rows re-stamped (§9.5 `coverage.js`, Q36) |
+| 4 P2 | A commit before the nominal deadline can still miss every reader window (manual run at `:24:10`; a delayed reader) | **Agreed.** Coverage stated against actual reader snapshots: assumption D (measured: runs end ≤ 53 s after the minute, `out/21`), a run phase that refuses the counterexample, re-stamp recovery, a read-only audit. The reader isn't changed (Q36) |
+| 5 P2 | The old EAL regex can store NULL `eal_time` (`Info` with `","`), so time text isn't a complete provenance test | **Agreed; reproduced** with the repo's regex. NULL or unrecognised time text is an ambiguous class that can match either form; new rows are validated to new-form or NULL; the counters are narrowed to what's observable (§9.3, Q37) |
+| 6 P2 | A save failure after the hash is set is never retried; `gzip_file.js` doesn't await its insert | **Agreed.** The hash follows the acknowledged save; the CT path has its own awaited `save.js`; a failed save stays pending (§9.5) |
+| 7 P2 | Permanent retention has no capacity or failure contract | **Agreed.** Completed entries leave the spool; disk and age WARN/ERROR thresholds with an owner; a failed retention write blocks completion; `replayed/` counted (§9.5, 1b.6) |
+
+All 7 required additions to 1b.1/1b.2 are in §9.8. Also corrected: the round-2 handoff called the
+plan uncommitted; it was committed as `a3b3a75`.

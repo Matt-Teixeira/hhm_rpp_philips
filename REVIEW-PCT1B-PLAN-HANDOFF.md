@@ -1,5 +1,44 @@
 # Review handoff: PCT-1b parser fix design (Philips CT), before the build
 
+## Round 3 (2026-11-24): the design revised for `REVIEW-PCT1B-PLAN-CODEX-2.md`
+
+Repo `hhm_rpp_philips`, branch `DEV`. The plan revised for round 2 is committed on `DEV`, on top of
+`a3b3a75` (which committed the round-1 revision; the round-2 text below wrongly called that
+uncommitted). **§9 is authoritative**; the round-3 changes are listed in
+§9.10. Please write round-3 findings to `REVIEW-PCT1B-PLAN-CODEX-3.md`. Ground rules unchanged
+(below). Q27–Q33 and Q34–Q37 are AGREED (Q34–Q37 on 2026-11-24, as recommended). Still no parser code.
+
+| Round-2 finding | Change | Where | New evidence (`~/philips_ct_evidence/pct1b/`) |
+|---|---|---|---|
+| 1 P1 rollback after a partial publish | `tooling/philips_ct_rollback.js check` / `apply`. `apply` holds the collector's `<dir>/.grab.lock`, preserves all five published files with fsync and read-back sha256, proves each `.output` covered by content (legacy re-export of the preserved `Logger.mdb`, or a rebuild from a completed `.csv`, byte-equal), sets only covered offsets, stops on `UNCOVERED`. Replay includes a fresh `-e` export of the preserved `Logger.mdb` | §9.4, Q35 | |
+| 2 P1 valid snapshots that keep failing | `spool.js`: every changed snapshot spooled (fsync, atomic `state.json`) before anything else; pending entries processed oldest first each run; done only when committed and the save acknowledged | §9.5, Q34 | |
+| 3 P2 timeout ≠ commit deadline | DB clock only; the deadline kept as a resource control; a late (`t1 ≥ N_next`) or uncertain commit is marked `restamp_due`, and the next in-phase run re-stamps that commit's EAL rows' `capture_datetime` | §9.5 `coverage.js`, Q36 | |
+| 4 P2 reader windows | Assumption D (reader snapshot within N + 5 min); run phase `[N + 5 min, N_next − 2 min)` refuses your `:24:10` timeline; read-only audit against `util.app_run_logs`. Reader unchanged | §9.5 `coverage.js`, Q36 | `sql/10`, `out/21`: 672 runs in 14 days, 48/day, none missed; each ended 12–53 s after its minute (p99 37 s) |
+| 5 P2 NULL `eal_time` | Reproduced. Three classes by time text: old form → (a) only; new form → (b) only; NULL or other → ambiguous, either. New rows validated to new-form or NULL (the MDB time columns are nullable; 0 NULL in the copies). Counters narrowed to observable ones | §9.3, Q37 | `scripts/eal_null_time_probe.js`, `out/22` |
+| 6 P2 save after hash | `save.js` awaited, errors propagated; hash only after the acknowledged save; a failed save stays pending | §9.5 | |
+| 7 P2 retention capacity | Completed spool entries deleted (bytes are in `log.saved_files`); WARN 1 GB / 6 h, ERROR 5 GB / 24 h over `spool/`, `retained/`, `replayed/`; a failed retention write blocks completion; threshold arithmetic spelled out | §9.5, 1b.6 | free space 1.1 TB (2026-11-24) |
+
+Facts checked this round: `alert.detections` key is `(run_id, job_id, alert_model_id,
+capture_datetime, inserted_at)` (no cross-run dedupe); `log.philips_ct_eal_events` is
+partitioned by `RANGE (capture_datetime)`.
+
+**Please look hard at (round 3):**
+1. **Coverage (`coverage.js`).** Is the coverage condition right (`t < s` and `s − 30 min <
+   c`)? Is the phase sufficient under D, including a re-stamp run and a pending replay? Is the
+   "uncertain commit" check (rows with the recorded capture time exist) sound when two
+   transactions of one system share nothing but the system id? Is re-stamping by
+   `(system_id, capture_datetime, EAL kind)` precise enough?
+2. **Spool idempotence.** Oldest-first replay of pending entries, interleaved with new grabs,
+   resets and a rollback period: any order where rule P's multiset match inserts a duplicate or
+   drops a row?
+3. **Rollback coverage proof.** Is "legacy re-export of the preserved `Logger.mdb` equals the
+   `.output`" or "rebuild from a completed `.csv` equals the `.output`" a sound proof that
+   setting that offset to the preserved size skips nothing? Locale and `sort` determinism?
+4. **Ambiguous class.** Any path by which a new row is stored with time text that isn't
+   new-form or NULL, or an old row lands as new-form?
+5. Anything in the required-additions list (§9.8 1b.1/1b.2) that doesn't actually test what the
+   finding needed.
+
 ## Round 2 (2026-11-20): the design revised for `REVIEW-PCT1B-PLAN-CODEX.md`
 
 Repo `hhm_rpp_philips`, branch `DEV`. The revised plan is in the working tree, uncommitted, on top
