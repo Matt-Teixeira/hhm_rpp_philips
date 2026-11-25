@@ -5,7 +5,7 @@ recommendation in every §3 question (Q1–Q11) as written. Evidence was read-on
 no code, no commit, and no write to prod, Redis, `/home/prod` or the collector folders. Evidence:
 `~/philips_cv_evidence/` (README is the index).
 
-**Next:** CV-1b (§7): parser built (`fb3d510`, `49d016b`; review closed §7.9). Collector: review closed (§7.12); day 1 pulled and **rolled back** on 2026-11-25 before its first run (§7.13); the 30-day window (`60e91aa`) is promoted (`DEV` = `STAGING` = `PROD`); next: you pull on prod, then my day-1 check (§7.11). CV-2a (the
+**Next:** CV-1b (§7): parser built (`fb3d510`, `49d016b`; review closed §7.9). Collector: review closed (§7.12); day 1 pulled and **rolled back** on 2026-11-25 before its first run (§7.13); the 30-day window (`60e91aa`) promoted and **pulled on prod 2026-11-25 15:43 UTC; day 1 clean** (§7.14). Next: day 2, the parser, on 2026-11-26 after a last check of the collector runs since 16:00. CV-2a (the
 code mapping, read-only) can run in parallel once you say so.
 
 **In one paragraph:** the parser stores what it reads faithfully. On every sampled file, row counts
@@ -658,3 +658,22 @@ window and scan tests fail on `1c71e97`.
 
 **Lesson:** size a first run on the real disk with the code's own selection rule, before the pull,
 not after. That check is now in the day-1 row of §7.11.
+
+### 7.14 Day 1 done: the collector on prod (2026-11-25)
+
+You pulled `60e91aa` at about 15:43 UTC. All 5 changed files on prod are byte-identical to `DEV`. I
+checked read-only (`~/philips_cv_evidence/out/52`–`55`):
+
+| Check | Result |
+|---|---|
+| Before the run: the **deployed** module's own selection on the prod disk | 6 folders: SME00445 `daily_2026_10_27`, `daily_2026_11_11`; SME00446 `daily_2026_11_11`, `daily_2026_11_19`; SME02531 `daily_2026_11_23`; SME11677 `daily_2026_11_02` |
+| The 16:00 run (`4bdc443f`) | 16:00:08 → 16:00:51 (**43 s**; the last 4 days in the same slot: 41–44 s) |
+| Unzips | 6 calls, 6 published (`EventLog.txe` + `EventLogSystem.txe`, at 16:00:31), **0 unzip errors** |
+| Older pending zips | 2,557 → **2,551**: nothing outside the window was touched |
+| Temp / staging folders left | **0** |
+| Run-log warnings / errors | **41** (39 listing warnings + 2 unreachable systems, SME00467 and SME02548), against 43 every day before. The 2 fewer are the old code's "cannot find Event.zip" unzip error on those 2 unreachable systems, which the sweep doesn't produce |
+| The 16:18 `PHILIPS_CV` parser run (still the old parser) | 46 warnings, 0 errors, 0 inserts, as every run today. No rows arrived for the 4 systems since 16:00: the 6 folders sit behind its pointers. They are for the backfill (§7.11) |
+
+**Before day 2 (2026-11-26):** I check that every collector run since 16:00 was like this one, and
+that any folder fetched since then got its `EventLog.txe` within one run. Then the parser:
+promote `hhm_rpp_philips` and pull (§7.11).
