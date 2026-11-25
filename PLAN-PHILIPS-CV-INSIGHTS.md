@@ -5,7 +5,7 @@ recommendation in every §3 question (Q1–Q11) as written. Evidence was read-on
 no code, no commit, and no write to prod, Redis, `/home/prod` or the collector folders. Evidence:
 `~/philips_cv_evidence/` (README is the index).
 
-**Next:** CV-1b (§7): parser built (`fb3d510`, `49d016b`; review closed §7.9). Collector change committed in `hhm_data_acquisition` (`43888d9`, §7.10); its Codex review is next, then deploy (§7.11). CV-2a (the
+**Next:** CV-1b (§7): parser built (`fb3d510`, `49d016b`; review closed §7.9). Collector committed (`43888d9`); its Codex review found 2 P2 + 1 P3, all fixed and closed (§7.12); next: deploy (§7.11, day 1 = collector). CV-2a (the
 code mapping, read-only) can run in parallel once you say so.
 
 **In one paragraph:** the parser stores what it reads faithfully. On every sampled file, row counts
@@ -602,4 +602,27 @@ then deploy (C1: collector first, parser a day later, then the backfill).
 |---|---|---|---|
 | **Day 1: collector** | your machine, then the server | promote `hhm_data_acquisition` `DEV` → `STAGING` → `PROD`; then `sudo -u prod git -C /home/prod/hhm_data_acquisition pull` | after the next :00/:30 run: the 123 pending folders have `EventLog.txe`; no `.unzip_tmp.*` left; no new unzip errors; regular-run time still under the next :10 |
 | **Day 2: parser** | the server | if it's December: `log.philips_cv_eventlog_2026_12` exists. Promote `hhm_rpp_philips` `DEV` → `STAGING` → `PROD`; then `sudo -u prod git -C /home/prod/hhm_rpp_philips pull`. No `.env` or cron change | after the next :18/:48 run: rows per system as before; no `NO MATCH FOUND`; no errors; the pointers move. Then 5 clean days (§7.5 step 7) |
-| **Backfill** (after day 2) | the server, in `/home/prod/hhm_rpp_philips` | 1. the one unpolled folder: `sudo -u prod /home/prod/hhm_data_acquisition/read/sh/Philips/parse_event_zip.sh /home/prod/hhm_data_acquisition/files/SME11925/<folder>`. 2. `sudo -u prod env DRY_RUN=1 node tooling/cv_backfill.js <list.tsv>` (I prepare the list then, from the live pointers). 3. `--apply` on **one** folder (the lock-and-transaction path has never run, §7.9). 4. `--apply` on the rest | after 3 and 4: rows = the reader's record count per folder; the gaps in `sql/08_gaps.sql` closed; nothing in the alert window. The 2026-05 folders are refused if that partition is detached by then (§7.8 item 6) |
+| **Backfill** (after day 2) | the server, in `/home/prod/hhm_rpp_philips` | 1. the one unpolled folder: `sudo -u prod /home/prod/hhm_data_acquisition/read/sh/Philips/parse_event_zip.sh /home/prod/hhm_data_acquisition/files/SME11925/<folder>`. 2. `sudo -u prod env DRY_RUN=1 node tooling/cv_backfill.js <list.tsv>` (I prepare the list then, from the live pointers). 3. `--apply` on **one** folder (the lock-and-transaction path has never run, §7.9). 4. `--apply` on the rest | **before 3 (§7.12):** each folder's window from the `DRY_RUN` output overlaps both neighbouring loaded exports (a cut historic zip would leave a gap; such a folder is held back). After 3 and 4: rows = the reader's record count per folder; the gaps in `sql/08_gaps.sql` closed; nothing in the alert window. The 2026-05 folders are refused if that partition is detached by then (§7.8 item 6) |
+
+### 7.12 Codex review CV1B-COLLECTOR (2026-11-25): two P2 and one P3, all fixed
+
+The review (`hhm_data_acquisition/REVIEW-CV1B-COLLECTOR-CODEX.md`, of `43888d9`) found 0 P1, 2 P2
+and 1 P3. All three reproduced, and all three are fixed. Each
+finding has a test, and every one of those tests **fails on `43888d9`**.
+
+**New evidence:** the entry names of all **9,940** `Event.zip` files on disk since mid-2025
+(`~/philips_cv_evidence/out/42_zip_entries.txt`): 9,690 hold `EventLog.txe` + `EventLogSystem.txe`;
+163 add `EventLogSecurity.txe`; 82 hold `EventLog.txe` only; 5 are unreadable. No folders, no dot
+files, nothing else.
+
+| Finding | Fix | Tests |
+|---|---|---|
+| **P2-1** A failed publish could refresh the daily folder's mtime on every retry. The companion was moved in before `EventLog.txe`, and a nested `Trace/` could fail forever, so the parser's 48 h skip never fired | `parse_event_zip.sh` publishes an **allowlist** (the evidence above): `EventLog.txe` **first**, then `EventLogSystem.txe` / `EventLogSecurity.txe` if present. If the primary `mv` fails, the daily folder is untouched. Once the primary is in, the sweep never selects the folder again, so a companion failing afterwards is only reported on stderr (exit 0). Nothing else in the zip is published | `parse_event_zip.test.js`: a failed primary `mv`, twice, leaves the mtime unchanged both times; a failed companion still publishes the primary and the sweep skips the folder; a zip with `Trace/` next to an existing non-empty `Trace/` |
+| **P2-2** A cut transfer could leave a valid-looking zip prefix at `Event.zip`, which was unzipped and never repaired | `phil_cv_21.sh` / `phil_cv_22.sh` download into `files/<SME>/.incoming.<daily>.<pid>` (next to the daily folder) and `mv` the zip in **only after `lftp` succeeds and the file is non-empty**. A failed transfer leaves nothing at `Event.zip`, doesn't touch the daily folder, and is fetched again later. The `lftp` commands, the exit status and stderr on failure are unchanged, so the wrapper classifies outcomes as before. **Historic zips** (fetched by the old scripts) aren't vouched for by this: they reach the DB only through the backfill, and §7.11 now checks that each one's window overlaps both neighbouring exports before `--apply` | `phil_cv_grab.test.js` (stub `lftp`, both scripts): finished; **a cut transfer whose bytes are a valid zip → nothing published, mtime unchanged, and the next complete transfer is published, swept and unzipped with the new content**; 550; `lftp` exit 0 with an empty or missing file |
+| **P3** Dot entries were dropped silently | Covered by the allowlist (the policy is now explicit and tested) | the allowlist test (`.export-info`, `other.bin` not published) |
+
+**Re-verified:** `npx jest read/__tests__ util/tools/__tests__`: **74 of 74** (PCT-C 51 + 23). On
+the 4 real zips, `EventLog.txe` is byte-identical to `unzip -p`. A real 3-file zip publishes all
+three files, identical to `unzip -p`, with no temp left.
+
+**Review CLOSED 2026-11-25 (your decision):** no finding is open, and each fix is shown on the review's own counterexample.
