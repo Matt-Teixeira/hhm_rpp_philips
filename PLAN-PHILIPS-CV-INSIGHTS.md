@@ -5,7 +5,7 @@ recommendation in every §3 question (Q1–Q11) as written. Evidence was read-on
 no code, no commit, and no write to prod, Redis, `/home/prod` or the collector folders. Evidence:
 `~/philips_cv_evidence/` (README is the index).
 
-**Next:** CV-1b (§7): built (`fb3d510`), Codex review fixed and closed (§7.9); collector session (§7.3) started 2026-11-25. CV-2a (the
+**Next:** CV-1b (§7): parser built (`fb3d510`, `49d016b`; review closed §7.9). Collector change committed in `hhm_data_acquisition` (`43888d9`, §7.10); its Codex review is next, then deploy (§7.11). CV-2a (the
 code mapping, read-only) can run in parallel once you say so.
 
 **In one paragraph:** the parser stores what it reads faithfully. On every sampled file, row counts
@@ -338,6 +338,8 @@ push, in any repo.
 - Is `license checking failed` (730020000) harmless noise?
 - Is `PSA died` / "Not connected to the Remote Support Server" a known remote-support outage?
 - What normal range does the detector temperature (0.1 °C units, e.g. 289) have?
+- Why does SME14784 sometimes create a `daily_*` folder without writing its `Event.zip` (30 times
+  in 2026, §7.10)?
 
 ---
 
@@ -426,10 +428,11 @@ starts on your go-ahead (§7.7).
    example `files/<SME>/.unzip_tmp/`). The parser's 48 h skip measures the daily folder's mtime, and
    a temp folder inside it would refresh that mtime on every failed retry, so the skip would never
    fire (found while writing the CV-1b review handoff).
-3. **Visible failures:** log an error when `list_new_phil_cv_files` returns `null` (18 systems are
-   silent today).
-4. **Check on the devices:** see whether `SaveDevData` still holds the 33 folders that can't be
-   recovered (32 empty, 1 truncated). Re-fetch them only if it does (§7.6 C4).
+3. ~~**Visible failures:** log an error when `list_new_phil_cv_files` returns `null`.~~ **Dropped
+   (2026-11-25, §7.10): my claim was wrong.** Listing failures are logged as warnings and queued for
+   the tunnel reset and the connection status (`exec_list_dirs`). My 24 h query had filtered on text
+   that those entries don't contain.
+4. ~~**Check on the devices**~~ **Answered from the run logs (C4, §7.10): nothing to re-fetch.**
 
 ### 7.4 The backfill (Q4)
 
@@ -551,3 +554,52 @@ every new test **fails on `fb3d510`** (mutation check).
 
 **Review CLOSED 2026-11-25 (your decision):** no finding is open. The fixes answer each finding with the review's own
 counterexample, and a further round would only confirm them (feedback: no confirmation-only rounds).
+
+### 7.10 Collector session (2026-11-25, `hhm_data_acquisition` `DEV` commit `43888d9`)
+
+**What the session found** (`~/philips_cv_evidence/sql/40`–`41`, `out/40`–`41`):
+- **The tunnel-reset job runs at :10 and :40** (≤ 7 min); regular runs at :00 and :30 (≤ 50 s). They
+  never overlap, so the sweep needs no "is this download finished?" rule. A half-downloaded zip
+  would just fail to unzip and be retried next run.
+- **C4, the 33 unrecoverable folders: nothing to re-fetch.** 30 are on SME14784, spread over every
+  month through November, so this is recurring, not history. For SME14784 `daily_2026_11_17` the
+  device answered `550 Event.zip: The system cannot find the file` on **158 tries over 6 days**
+  (1,458 such answers from July to November). The device created the daily folder and never wrote
+  its zip. That's a question for field service (§5). The other three are one each on SME21636,
+  SME11713 and SME13529 (the truncated zip; not polled).
+- **§7.3 item 3 dropped** (see there).
+- **A side bug, not changed:** the tunnel-reset path hard-codes `phil_cv_21_lod.sh` (FTP), even for
+  the 12 SFTP (`phil_cv_22`) systems.
+
+**The change (two items):**
+
+| File | Change |
+|---|---|
+| `read/sh/Philips/parse_event_zip.sh` | **Atomic.** Extracts into `files/<SME>/.unzip_tmp.<daily>.<pid>`, **outside** the daily folder, then `mv`s the files in, `EventLog.txe` last. Any failure (damaged zip, no `EventLog.txe` in the zip, `unzip` dying mid-write) publishes nothing, leaves the daily folder's mtime unchanged (which the parser's 48 h rule relies on), and removes the temp folder. Guards against a missing folder, an empty argument, or a folder without `Event.zip`. The old "newest `Event.zip` under `$1`" `find` is gone: each folder holds one zip |
+| `util/tools/phil_cv_unzip_sweep.js` (new) | `folders_to_unzip` (pure) and `scan_system_folder`: every `daily_*` folder with `Event.zip` and no `EventLog.txe`, oldest first |
+| `jobs/hhm/philips/philips_cv.js` | At the end of each regular run, the sweep unzips every pending folder, **whoever fetched it**. This replaces the unzip of only `last_aquired_dir` and of this run's folders. The re-fetch of a zip missing from `last_aquired_dir` is unchanged |
+| `read/__tests__/parse_event_zip.test.js`, `util/tools/__tests__/phil_cv_unzip_sweep.test.js` (new) | 10 jest tests: byte-identical output to the pre-change script (pinned to `aa68ceb`); rename (new inode); the three failure cases keep the mtime and leave no temp; argument guards; sweep selection; `run_phil_cv` sweeping two tunnel-reset folders while the device is unreachable |
+
+**Verified:**
+- `npx jest read/__tests__ util/tools/__tests__`: 61 of 61 pass (PCT-C's 51 + 10).
+- Against the pre-change code, 7 of the 10 fail. The 3 that pass are by design: sweep selection
+  (new code), scan (new code), and the truncated zip, which the old script also refused, though in
+  place.
+- On copies of 4 real zips: `EventLog.txe` is byte-identical to `unzip -p`, with the same files and
+  no temp left (`cv1b/15_collector_unzip_real.txt`).
+
+**What the first deployed run does:** it unzips the **123** pending old zips on polled systems once
+(41 MB compressed, 868 MB uncompressed; 1.1 TB free). They are all behind the parser's pointers, so
+the live parser ignores them; the backfill reads them. Only 1 of the 45 backfill folders is on a
+system that isn't polled (SME11925). It needs a one-off unzip with the same script (§7.11).
+
+**Next:** Codex review (`hhm_data_acquisition/REVIEW-CV1B-COLLECTOR-HANDOFF.md`; committed before it, at your request),
+then deploy (C1: collector first, parser a day later, then the backfill).
+
+### 7.11 Deploy runbook (C1 order; you run each step, I check each one read-only)
+
+| Step | Where | What | My check afterwards |
+|---|---|---|---|
+| **Day 1: collector** | your machine, then the server | promote `hhm_data_acquisition` `DEV` → `STAGING` → `PROD`; then `sudo -u prod git -C /home/prod/hhm_data_acquisition pull` | after the next :00/:30 run: the 123 pending folders have `EventLog.txe`; no `.unzip_tmp.*` left; no new unzip errors; regular-run time still under the next :10 |
+| **Day 2: parser** | the server | if it's December: `log.philips_cv_eventlog_2026_12` exists. Promote `hhm_rpp_philips` `DEV` → `STAGING` → `PROD`; then `sudo -u prod git -C /home/prod/hhm_rpp_philips pull`. No `.env` or cron change | after the next :18/:48 run: rows per system as before; no `NO MATCH FOUND`; no errors; the pointers move. Then 5 clean days (§7.5 step 7) |
+| **Backfill** (after day 2) | the server, in `/home/prod/hhm_rpp_philips` | 1. the one unpolled folder: `sudo -u prod /home/prod/hhm_data_acquisition/read/sh/Philips/parse_event_zip.sh /home/prod/hhm_data_acquisition/files/SME11925/<folder>`. 2. `sudo -u prod env DRY_RUN=1 node tooling/cv_backfill.js <list.tsv>` (I prepare the list then, from the live pointers). 3. `--apply` on **one** folder (the lock-and-transaction path has never run, §7.9). 4. `--apply` on the rest | after 3 and 4: rows = the reader's record count per folder; the gaps in `sql/08_gaps.sql` closed; nothing in the alert window. The 2026-05 folders are refused if that partition is detached by then (§7.8 item 6) |
