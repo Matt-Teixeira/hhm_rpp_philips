@@ -5,7 +5,7 @@ const assert = require("assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { decode_line, mask_phi, prepare_line, parse_line, read_lines, SEPARATOR, MASK } = require("../decode");
+const { decode_line, mask_phi, prepare_line, parse_line, read_lines, safe_head, SEPARATOR, MASK } = require("../decode");
 const { philips_re } = require("../../../../parse/parsers");
 
 const A = "\u00e1"; // byte 0xE1 read as Latin-1: the field separator
@@ -101,7 +101,7 @@ test("mask: every PHI command's value is masked; empty values and procedure name
   for (const c of cmds) {
     const memo = `Memo: [FUSION_COMMAND]  ${c} Execute() Value 01 "x, y" [UI_DEVICE_NAME]  . `;
     const g = parse(full({ desc: `Description: Command: ${c} `, memo }), RE1);
-    assert.strictEqual(g.memo, `[FUSION_COMMAND]  ${c} Execute() ${MASK} [UI_DEVICE_NAME]  . `, c);
+    assert.strictEqual(g.memo, `[FUSION_COMMAND]  ${c} Execute() ${MASK}`, c);
     assert.strictEqual(g.thread_name, "4528", c);
   }
   const empty = "[FUSION_COMMAND]  SetPatientName Execute() [UI_DEVICE_NAME]  . ";
@@ -138,4 +138,57 @@ test("read_lines: real bytes from disk (0xE1, 0xA0, 0x83, 0x05, CRLF), decoded a
   assert.strictEqual(parse_line(lines[1], RE2).thread_name, "tRouterRdQ4");
   assert.ok(!lines[2].includes("1950"));
   assert.ok(lines.every((l) => !l.includes(A)));
+});
+
+const SECRET = "SYNTHETIC_SECRET";
+const phiMemo = (value) => `Memo: [FUSION_COMMAND]  SetLongReportText Execute() ${value} [UI_DEVICE_NAME]  . `;
+
+test("mask (review P1-A): a tag inside the typed value doesn't end it; the structural tail does", () => {
+  const line = prepare_line(full({ desc: "Description: Command: SetLongReportText ", memo: phiMemo(`note [UI_DEVICE_NAME] ${SECRET}`) }));
+  assert.ok(!line.includes(SECRET));
+  const g = parse_line(line, RE1);
+  assert.strictEqual(g.memo, `[FUSION_COMMAND]  SetLongReportText Execute() ${MASK}`);
+  assert.strictEqual(g.subsystem_number, "1");
+  assert.strictEqual(g.thread_name, "4528");
+  // a tag with no space before it, and a record with no SubsystemNumber field (12 fields): to the end
+  assert.ok(!mask_phi(`x${A}Memo: [FUSION_COMMAND]  SetPatientID Execute() a[UI_DEVICE_NAME]${SECRET}`).includes(SECRET));
+  const twelve = prepare_line(full({ memo: phiMemo(SECRET) }).split(A).slice(0, 12).join(A));
+  assert.ok(!twelve.includes(SECRET) && twelve.endsWith(`Execute() ${MASK}`));
+});
+
+test("mask: empty values and the 'Confirmed command' form are left alone", () => {
+  const empty = full({ memo: "Memo: [FUSION_COMMAND]  SetPatientName Execute() [UI_DEVICE_NAME]  . " });
+  assert.strictEqual(prepare_line(empty), decode_line(empty));
+  const confirmed = full({ memo: "Memo: [FUSION_COMMAND]  SetPatientID Confirmed command, logged before confirmation:  Execute() [UI_DEVICE_NAME]  . " });
+  assert.strictEqual(prepare_line(confirmed), decode_line(confirmed));
+  const typed = full({ memo: `Memo: [FUSION_COMMAND]  SetPatientID Confirmed command, logged before confirmation:  Execute() ${SECRET} [UI_DEVICE_NAME]  . ` });
+  assert.ok(!prepare_line(typed).includes(SECRET));
+});
+
+test("read_lines (review P1-B): LF, CR or CRLF inside a value is joined to its record and masked", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cv1b-"));
+  const file = path.join(dir, "EventLog.txe");
+  const rec = (memo, o = {}) => full({ desc: "Description: Command: SetLongReportText ", memo, ...o });
+  const latin1 = [
+    full({ time: "07:00:04" }),
+    rec(phiMemo(`first\n${SECRET}`), { time: "07:00:03" }),
+    rec(phiMemo(`first\r${SECRET}`), { time: "07:00:02" }),
+    rec(phiMemo(`first\r\n${SECRET}`), { time: "07:00:01" }),
+    full({ time: "07:00:00", desc: "Description: Two\nlines" }),
+    ""
+  ].join("\r\n");
+  fs.writeFileSync(file, Buffer.from(latin1, "latin1"));
+  const recs = [];
+  for await (const l of read_lines(file)) recs.push(l);
+  fs.rmSync(dir, { recursive: true });
+  assert.strictEqual(recs.length, 5);
+  assert.ok(recs.every((l) => !l.includes(SECRET)));
+  for (const l of recs.slice(1, 4)) assert.strictEqual(parse_line(l, RE1).memo, `[FUSION_COMMAND]  SetLongReportText Execute() ${MASK}`);
+  assert.strictEqual(parse_line(recs[4], RE1).description, "Two lines");
+});
+
+test("safe_head: category, date and time of a record; null for anything else", () => {
+  assert.strictEqual(safe_head(decode_line(full())), "Acquisition | 2026-11-25 | 07:01:17");
+  assert.strictEqual(safe_head(`${SECRET} [UI_DEVICE_NAME]`), null);
+  assert.strictEqual(safe_head("NOT A RECORD"), null);
 });

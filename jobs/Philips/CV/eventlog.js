@@ -16,7 +16,7 @@ const extract = require("../../../processing/date_processing/phil_cv/extract_mem
 const { dt_now } = require("../../../util/dates");
 const { build_upsert_str } = require("../../../util");
 const { gzip_n_save } = require("../../../util");
-const { read_lines, parse_line } = require("./decode");
+const { read_lines, parse_line, safe_head } = require("./decode");
 const { folders_to_parse, folder_action, WAIT_HOURS } = require("./folders");
 const [addLogEvent] = require("../../../utils/logger/log");
 const {
@@ -28,9 +28,11 @@ const {
   pg_column_sets: pg_cs
 } = require("../../../utils/db/sql/pg-helpers_hhm");
 
-// CV-1b (PLAN-PHILIPS-CV-INSIGHTS.md §7.2): the file is read as Latin-1 and PHI is masked
-// (decode.js); folders are taken in date order and the pointer never moves past a folder that has
-// no EventLog.txe yet, or one that failed (folders.js).
+// CV-1b (PLAN-PHILIPS-CV-INSIGHTS.md §7.2, §7.9): the file is read as Latin-1, records are joined
+// and PHI is masked (decode.js); folders are taken in date order and the pointer never moves past a
+// folder that has no EventLog.txe yet, one that failed, or one whose every record was rejected
+// (folders.js). Unmatched text is never written to the run log: only its record head and length.
+const MAX_NO_MATCH_NOTES = 20;
 async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
   const capture_datetime = dt_now();
   const sme = sysConfigData.id;
@@ -69,6 +71,8 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
     const data = [];
     // memo_data: HOLDS EXTRACTED 'Power-On hours' and 'Commercial Version' DATA TO INSERT INTO logfile_event_history_metadata TABLE
     const memo_data = [];
+    // rejected: NON-BLANK RECORDS THE REGEX DID NOT MATCH
+    let rejected = 0;
     // isLast: THE NEWEST FOLDER OF THIS RUN (ITS FILE IS SAVED TO log.saved_files)
     const isLast = i === files_to_parse.length - 1;
 
@@ -115,14 +119,19 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
           if (isNewLine) {
             continue;
           } else {
-            let note = {
-              job_id,
-              id: sme,
-              file: file_config,
-              line,
-              message: "NO MATCH FOUND"
-            };
-            await addLogEvent(W, run_log, "phil_cv_eventlog", det, note, null);
+            rejected++;
+            if (rejected <= MAX_NO_MATCH_NOTES) {
+              let note = {
+                job_id,
+                id: sme,
+                dir: file,
+                file: file_config.file_name,
+                record_head: safe_head(line),
+                length: line.length,
+                message: "NO MATCH FOUND"
+              };
+              await addLogEvent(W, run_log, "phil_cv_eventlog", det, note, null);
+            }
           }
         } else {
           groups.system_id = sme;
@@ -141,7 +150,7 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
             let note = {
               job_id,
               id: sme,
-              line,
+              dir: file,
               match_group: groups,
               message: "datetime object null"
             };
@@ -162,9 +171,20 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
         }
       }
 
-      // A FILE WITH NO RECORDS: NOTHING TO INSERT; MOVE ON
+      if (rejected > MAX_NO_MATCH_NOTES) {
+        note.message = `NO MATCH FOUND for ${rejected} records (the first ${MAX_NO_MATCH_NOTES} logged)`;
+        await addLogEvent(W, run_log, "phil_cv_eventlog", det, { ...note }, null);
+      }
+
       if (!data.length) {
-        note.message = "No records in file";
+        // EVERY RECORD REJECTED: AN UNSUPPORTED OR DAMAGED EXPORT. STOP; THE POINTER STAYS (review P2)
+        if (rejected > 0) {
+          note.message = `All ${rejected} records rejected: stop, the pointer stays`;
+          await addLogEvent(E, run_log, "phil_cv_eventlog", cat, note, null);
+          break;
+        }
+        // A BLANK FILE: NOTHING TO INSERT; MOVE ON
+        note.message = "No records in file (blank)";
         await addLogEvent(W, run_log, "phil_cv_eventlog", war, note, null);
         await update_last_parsed_daily(sme, file);
         continue;

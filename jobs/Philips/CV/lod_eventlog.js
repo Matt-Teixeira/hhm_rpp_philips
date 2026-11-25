@@ -24,7 +24,8 @@ const generateDateTime = require("../../../processing/date_processing/generateDa
 const { gzip_n_save } = require("../../../util");
 const { dt_now } = require("../../../util/dates");
 // CV-1b (plan §7.2): read as Latin-1, separator restored, PHI masked before matching
-const { read_lines, parse_line } = require("./decode");
+const { read_lines, parse_line, safe_head } = require("./decode");
+const MAX_NO_MATCH_NOTES = 20;
 
 // Logger
 const [addLogEvent] = require("../../../utils/logger/log");
@@ -160,6 +161,7 @@ async function phil_cv_lod_eventlog(
     } 
     */
 
+    let rejected = 0;
     for await (const line of read_lines(complete_file_path)) {
       const groups = parse_line(line, philips_re.cv[parsers[0]]);
       if (groups === null) {
@@ -167,21 +169,26 @@ async function phil_cv_lod_eventlog(
         if (isNewLine) {
           continue;
         } else {
-          let note = {
-            job_id,
-            sme: sme,
-            file: file_config,
-            line,
-            message: "NO MATCH FOUND"
-          };
-          await addLogEvent(
-            W,
-            run_log,
-            "phil_cv_lod_eventlog",
-            det,
-            note,
-            null
-          );
+          // NO RAW TEXT IN THE RUN LOG (review CV1B P1): ONLY THE RECORD HEAD AND LENGTH
+          rejected++;
+          if (rejected <= MAX_NO_MATCH_NOTES) {
+            let note = {
+              job_id,
+              sme: sme,
+              file: file_config.file_name,
+              record_head: safe_head(line),
+              length: line.length,
+              message: "NO MATCH FOUND"
+            };
+            await addLogEvent(
+              W,
+              run_log,
+              "phil_cv_lod_eventlog",
+              det,
+              note,
+              null
+            );
+          }
         }
       } else {
         groups.system_id = sme;
@@ -199,7 +206,6 @@ async function phil_cv_lod_eventlog(
           let note = {
             job_id,
             sme: sme,
-            line,
             match_group: groups,
             message: "datetime object null"
           };
@@ -227,6 +233,18 @@ async function phil_cv_lod_eventlog(
           });
         }
       }
+    }
+
+    if (rejected > MAX_NO_MATCH_NOTES) {
+      note.message = `NO MATCH FOUND for ${rejected} records (the first ${MAX_NO_MATCH_NOTES} logged)`;
+      await addLogEvent(W, run_log, "phil_cv_lod_eventlog", det, { ...note }, null);
+    }
+
+    // NO RECORD MATCHED: STOP WITHOUT UPDATING THE REDIS SIZE, SO THE FILE IS READ AGAIN (review CV1B P2)
+    if (!data.length) {
+      note.message = rejected > 0 ? `All ${rejected} records rejected: not acknowledged` : "No records in file (blank): not acknowledged";
+      await addLogEvent(rejected > 0 ? E : W, run_log, "phil_cv_lod_eventlog", cat, note, null);
+      return;
     }
 
     // homogenize data to prep for insert to db

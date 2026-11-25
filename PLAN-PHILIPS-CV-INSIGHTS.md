@@ -5,7 +5,7 @@ recommendation in every §3 question (Q1–Q11) as written. Evidence was read-on
 no code, no commit, and no write to prod, Redis, `/home/prod` or the collector folders. Evidence:
 `~/philips_cv_evidence/` (README is the index).
 
-**Next:** CV-1b (§7): C1–C4 AGREED; steps 1–4 built and verified on `DEV` (§7.8); Codex review next. CV-2a (the
+**Next:** CV-1b (§7): built (`fb3d510`), Codex review fixed and closed (§7.9); collector session (§7.3) started 2026-11-25. CV-2a (the
 code mapping, read-only) can run in parallel once you say so.
 
 **In one paragraph:** the parser stores what it reads faithfully. On every sampled file, row counts
@@ -421,8 +421,11 @@ starts on your go-ahead (§7.7).
    `Event.zip` and no `EventLog.txe`. This covers the tunnel-reset path with no change to it. It
    also unzips the 129 old zips once. That's harmless: they sit before the parser's pointer, so
    they are only read by the explicit backfill (§7.4).
-2. **Atomic unzip:** `parse_event_zip.sh` extracts to a temporary folder next to the target, then
-   `mv`s `EventLog.txe` into place last.
+2. **Atomic unzip:** `parse_event_zip.sh` extracts to a temporary folder, then `mv`s
+   `EventLog.txe` into place last. **The temporary folder must be outside the daily folder** (for
+   example `files/<SME>/.unzip_tmp/`). The parser's 48 h skip measures the daily folder's mtime, and
+   a temp folder inside it would refresh that mtime on every failed retry, so the skip would never
+   fire (found while writing the CV-1b review handoff).
 3. **Visible failures:** log an error when `list_new_phil_cv_files` returns `null` (18 systems are
    silent today).
 4. **Check on the devices:** see whether `SaveDevData` still holds the 33 folders that can't be
@@ -522,3 +525,29 @@ results and the review handoff.
 
 **Next:** Codex review (`REVIEW-CV1B-HANDOFF.md` → `REVIEW-CV1B-CODEX.md`), then the collector
 session (§7.3), then deploy in the C1 order: collector, parser a day later, backfill.
+
+### 7.9 Codex review CV1B (2026-11-25): P1, P2 and P3, all fixed
+
+The review (`REVIEW-CV1B-CODEX.md`, of `fb3d510`) found one P1, one P2 and one P3. All three
+reproduced, and all three are fixed. Each fix has the review's own counterexample as a test, and
+every new test **fails on `fb3d510`** (mutation check).
+
+| Finding | Fix | Test |
+|---|---|---|
+| **P1-A** A tag inside a typed value ended the mask early (the lazy match stopped at the first ` [UI_DEVICE_NAME]`) | `mask_phi` finds the value's end from the record's **structure**: everything from `Execute()` to the record's last `�SubsystemNumber:` field (or the end of the record) becomes `<masked>`. Ambiguity over-masks, never under-masks. The "Confirmed command … Execute()" form is covered too | `decode.test.js` 10, 11 |
+| **P1-B** A CR / LF / CRLF inside a value split the record before masking; the rest reached the DB or the `NO MATCH FOUND` note | `read_lines` joins a physical line that doesn't start like a record (`<category>�YYYY-MM-DD�HH:MM:SS�`) to the previous record with one space, then masks. This works for CRLF and LF files alike. **`NO MATCH FOUND` notes no longer carry raw text**: only `record_head` (category, date, time) and the length. They are capped at 20 per file plus one total (a rejected file is now retried every run, so the cap matters). The `datetime object null` notes drop the raw line too | `decode.test.js` 12, 13; `eventlog_loop.test.js` 6, 8; `lod_loop.test.js` 1: the synthetic value appears in no INSERT and no serialized log note |
+| **P2** A file whose every record was rejected moved the pointer (the "no records" branch) | A non-blank file with 0 matched records logs an error `All N records rejected: stop, the pointer stays` and stops. Only a blank file moves on. LOD: an all-rejected (or blank) file is not acknowledged, and its Redis size isn't updated (explicit now; before, it relied on an empty-INSERT error) | `eventlog_loop.test.js` 7 (two runs: rejected → pointer stays; file replaced → loaded); `lod_loop.test.js` 2 |
+| **P3** Overlapping backfills, or the live job, could both pass the duplicate guards | The guards and the INSERT run in **one transaction after `pg_advisory_xact_lock(hashtext('philips_cv_backfill'))`**, so a second run waits and then sees "already loaded". **The tool refuses any folder not strictly before the system's live pointer** (Redis `GET`), so the live job can never load the same folder. With no pointer it refuses on `--apply` | `folders.test.js` 7 (`before_pointer`). **The lock and transaction path can't run under `DRY_RUN`, so it has not run yet.** First `--apply`: one folder, then check |
+
+**Re-verified after the fixes** (`~/philips_cv_evidence/cv1b/10`–`14`):
+- `node --test jobs/`: 11 of 11 files pass.
+- Oracle on all 16 real files: identical to §7.8 (771,620 rows; only separator rendering in
+  `message` and the 46 masked values differ). No real file has a CR or LF inside a field, so the
+  joining changes no real row.
+- `DRY_RUN` of `PHILIPS_CV` (3 systems): 79,768 rows, equal to the oracle field by field. PHI scan
+  with the structural rule: 108 occurrences, 46 masked, 62 empty, **0 unmasked**.
+- Backfill `DRY_RUN`: the 45 real folders are refused (no `.txe` yet); the scratch rehearsal loads
+  the same 29,449 rows; the control is refused.
+
+**Review CLOSED 2026-11-25 (your decision):** no finding is open. The fixes answer each finding with the review's own
+counterexample, and a further round would only confirm them (feedback: no confirmation-only rounds).

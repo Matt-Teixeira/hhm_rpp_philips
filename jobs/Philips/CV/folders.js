@@ -42,4 +42,13 @@ function folder_action({ has_txe, age_hours }) {
   return age_hours > WAIT_HOURS ? "skip" : "wait";
 }
 
-module.exports = { folder_key, folders_to_parse, folder_action, WAIT_HOURS };
+/**
+ * For tooling/cv_backfill.js (review CV1B P3): true only when `folder` is strictly before the live
+ * pointer, so the live job (which loads only folders after its pointer) can never load it too.
+ */
+function before_pointer(folder, pointer) {
+  const f = folder_key(folder), p = pointer ? folder_key(pointer) : null;
+  return f !== null && p !== null && f < p;
+}
+
+module.exports = { folder_key, folders_to_parse, folder_action, before_pointer, WAIT_HOURS };

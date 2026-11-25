@@ -37,15 +37,21 @@ stub("util/index.js", {
   build_upsert_str: () => "upsert",
   gzip_n_save: async (_j, _r, sme, name, _c, file) => { state.saved.push(path.basename(path.dirname(file))); }
 });
-stub("utils/logger/log.js", [async (type, _run, fn, _tag, note) => { state.logs.push({ type, fn, msg: note && note.message, dir: note && note.dir }); }]);
+stub("utils/logger/log.js", [async (type, _run, fn, _tag, note, error) => {
+  state.logs.push({ type, fn, msg: note && note.message, dir: note && note.dir, json: JSON.stringify({ note, error: error && String(error) }) });
+}]);
 
 const phil_cv_eventlog = require(path.join(CV, "eventlog.js"));
 
 // ---- temp system folder ----
 const A = "á";
-const record = (time) => ["Acquisition", "2026-11-25", time, "Information", "20481", "Technical Event ID:   510999921",
-  "Description: Command: StartFluoroscopy ", "Channel Identification: X", "Module: M", "Source File: S", "Line Number: 1 ",
-  "Memo: ", "SubsystemNumber: 1", "ThreadName: 2"].join(A);
+const record = (time, desc = "Command: StartFluoroscopy ", memo = "") => ["Acquisition", "2026-11-25", time, "Information", "20481",
+  "Technical Event ID:   510999921", `Description: ${desc}`, "Channel Identification: X", "Module: M", "Source File: S",
+  "Line Number: 1 ", `Memo: ${memo}`, "SubsystemNumber: 1", "ThreadName: 2"].join(A);
+const SECRET = "SYNTHETIC_SECRET";
+function write_txe(root, name, lines) {
+  fs.writeFileSync(path.join(root, name, "EventLog.txe"), Buffer.from(lines.join("\r\n") + "\r\n", "latin1"));
+}
 function system(folders) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cv1b-loop-"));
   for (const [name, spec] of Object.entries(folders)) {
@@ -115,5 +121,55 @@ test("a new system (no pointer) parses only its newest folder, as before", async
   await run(root);
   assert.strictEqual(state.inserts.length, 1);
   assert.strictEqual(state.pointer, "daily_2026_11_12");
+  fs.rmSync(root, { recursive: true });
+});
+
+test("review P1: a typed value split over lines, and an unmatched record, reach neither rows nor run-log notes", async () => {
+  const root = system({
+    daily_2026_11_20: {
+      lines: [
+        record("07:00:02"),
+        record("07:00:01", "Command: SetLongReportText ", `[FUSION_COMMAND]  SetLongReportText Execute() first\n${SECRET} [UI_DEVICE_NAME]  . `),
+        ["Acquisition", "2026-11-25", "07:00:00", "Information", "not-a-number", `${SECRET}`].join(A)
+      ]
+    }
+  });
+  reset("daily_2026_11_19");
+  await run(root);
+  assert.strictEqual(state.inserts.length, 1);
+  assert.strictEqual(rows(state.inserts[0]), 2);
+  assert.ok(!state.inserts[0].includes(SECRET));
+  assert.ok(state.logs.some((l) => l.msg === "NO MATCH FOUND"));
+  assert.ok(state.logs.every((l) => !l.json.includes(SECRET)), "a run-log note holds the value");
+  assert.strictEqual(state.pointer, "daily_2026_11_20");
+  fs.rmSync(root, { recursive: true });
+});
+
+test("review P2: a file whose every record is rejected keeps the pointer; once replaced, the next run loads it", async () => {
+  const root = system({ daily_2026_11_20: { lines: ["NOT A RECORD"] } });
+  reset("daily_2026_11_19");
+  await run(root);
+  assert.strictEqual(state.inserts.length, 0);
+  assert.strictEqual(state.pointer, "daily_2026_11_19");
+  assert.ok(state.logs.some((l) => l.type === "ERROR" && /All 1 records rejected/.test(l.msg || "")));
+  assert.ok(state.logs.every((l) => !l.json.includes("NOT A RECORD")));
+  write_txe(root, "daily_2026_11_20", [record("07:00:01"), record("07:00:00")]);
+  const pointer = state.pointer;
+  reset(pointer);
+  await run(root);
+  assert.strictEqual(state.inserts.length, 1);
+  assert.strictEqual(rows(state.inserts[0]), 2);
+  assert.strictEqual(state.pointer, "daily_2026_11_20");
+  fs.rmSync(root, { recursive: true });
+});
+
+test("NO MATCH notes are capped per file, with one summary of the total", async () => {
+  const bad = Array.from({ length: 25 }, (_, i) => ["Acquisition", "2026-11-25", "07:00:00", "Information", "x", String(i)].join(A));
+  const root = system({ daily_2026_11_20: { lines: [record("07:00:01"), ...bad] } });
+  reset("daily_2026_11_19");
+  await run(root);
+  assert.strictEqual(state.logs.filter((l) => l.msg === "NO MATCH FOUND").length, 20);
+  assert.ok(state.logs.some((l) => /NO MATCH FOUND for 25 records/.test(l.msg || "")));
+  assert.strictEqual(state.inserts.length, 1);
   fs.rmSync(root, { recursive: true });
 });

@@ -16,7 +16,13 @@
 // - Refused, and nothing written, when: EventLog.txe or Event.zip is missing; a line doesn't match;
 //   a datetime is null; rows with that (system_id, capture_datetime) exist (already loaded); or the
 //   system's daily rows already cover more than 10% of the file's records in its time window.
-// - Rows only: no Redis, log.saved_files, offline upsert or metadata (they describe the live state).
+// - Refused when the folder is not strictly before the system's live pointer
+//   (`<SME>.last_parsed_phil_cv_daily`, read with GET): the live job only loads folders after its
+//   pointer, so it can never load the same folder (review CV1B P3). With no pointer, refused on
+//   --apply; under DRY_RUN (the dev Redis) the check is reported, not enforced.
+// - The duplicate guards and the INSERT run in one transaction that first takes the advisory lock
+//   `philips_cv_backfill`, so two overlapping runs can't both see "not loaded" (review CV1B P3).
+// - Rows only: no Redis writes, log.saved_files, offline upsert or metadata (they describe the live state).
 require("dotenv").config();
 const fs = require("node:fs");
 const path = require("node:path");
@@ -31,7 +37,8 @@ const { philips_cv_eventlog_schema } = require("../persist/pg-schemas");
 const { pg_column_sets: pg_cs } = require("../utils/db/sql/pg-helpers_hhm");
 const generateDateTime = require("../processing/date_processing/generateDateTimes");
 const { read_lines, parse_line } = require("../jobs/Philips/CV/decode");
-const { folder_key } = require("../jobs/Philips/CV/folders");
+const { folder_key, before_pointer } = require("../jobs/Philips/CV/folders");
+const { get_last_parsed_daily } = require("../redis/redisHelpers");
 
 const MIN_CAPTURE = new Date("2026-05-01T00:00:00Z");
 const MIN_AGE_MS = 24 * 3600 * 1000;
@@ -54,6 +61,14 @@ async function load_folder(sys, folder, root) {
   const zip = path.join(dir, "Event.zip");
   if (!fs.existsSync(txe)) return { ...out, refused: "no EventLog.txe (the collector sweep unzips it)" };
   if (!fs.existsSync(zip)) return { ...out, refused: "no Event.zip (capture time unknown)" };
+  const pointer = await get_last_parsed_daily(sys.id);
+  out.live_pointer = pointer;
+  if (pointer === null || folder_key(pointer) === null) {
+    if (!isDryRun()) return { ...out, refused: "no live pointer for this system" };
+    out.pointer_check = "not enforced (DRY_RUN, no pointer)";
+  } else if (!before_pointer(folder, pointer)) {
+    return { ...out, refused: `not before the live pointer ${pointer}` };
+  }
   const capture = new Date(fs.statSync(zip).mtimeMs);
   out.capture_datetime = capture.toISOString();
   if (capture < MIN_CAPTURE) return { ...out, refused: `capture ${out.capture_datetime} before ${MIN_CAPTURE.toISOString()}` };
@@ -77,24 +92,29 @@ async function load_folder(sys, folder, root) {
   let lo = Infinity, hi = -Infinity; // a loop: one export can hold 444k rows (too many for Math.min(...))
   for (const g of data) { const t = new Date(g.host_datetime).getTime(); if (t < lo) lo = t; if (t > hi) hi = t; }
   const hmin = new Date(lo), hmax = new Date(hi);
-  const same = await db.one(
-    "SELECT count(*)::int n FROM log.philips_cv_eventlog WHERE system_id = $1 AND capture_datetime = $2", [sys.id, capture]);
-  if (same.n > 0) return { ...out, refused: `already loaded (${same.n} rows at this capture_datetime)` };
-  const covered = await db.one(
-    "SELECT count(*)::int n FROM log.philips_cv_eventlog WHERE system_id = $1 AND lod IS NOT TRUE AND host_datetime BETWEEN $2 AND $3",
-    [sys.id, hmin, hmax]);
   out.window = [hmin.toISOString(), hmax.toISOString()];
-  out.rows_already_in_window = covered.n;
-  if (covered.n > MAX_COVERED_SHARE * data.length) return { ...out, refused: "the window is already covered by daily rows" };
-
   const rows = mapDataToSchema(data, philips_cv_eventlog_schema);
-  const write = async (t) => {
+
+  // The guards and the INSERT, in one serialized section (apply) or recorded as is (DRY_RUN).
+  const guarded_write = async (t) => {
+    const same = await t.one(
+      "SELECT count(*)::int n FROM log.philips_cv_eventlog WHERE system_id = $1 AND capture_datetime = $2", [sys.id, capture]);
+    if (same.n > 0) return { ...out, refused: `already loaded (${same.n} rows at this capture_datetime)` };
+    const covered = await t.one(
+      "SELECT count(*)::int n FROM log.philips_cv_eventlog WHERE system_id = $1 AND lod IS NOT TRUE AND host_datetime BETWEEN $2 AND $3",
+      [sys.id, hmin, hmax]);
+    const r = { ...out, rows_already_in_window: covered.n };
+    if (covered.n > MAX_COVERED_SHARE * data.length) return { ...r, refused: "the window is already covered by daily rows" };
     for (let i = 0; i < rows.length; i += CHUNK) {
       await t.any(pgp.helpers.insert(rows.slice(i, i + CHUNK), pg_cs.log.philips.philips_cv_eventlog));
     }
+    return { ...r, inserted: rows.length };
   };
-  if (isDryRun()) await write(db); else await db.tx(write);
-  return { ...out, inserted: rows.length };
+  if (isDryRun()) return guarded_write(db);
+  return db.tx(async (t) => {
+    await t.one("SELECT pg_advisory_xact_lock(hashtext('philips_cv_backfill'))");
+    return guarded_write(t);
+  });
 }
 
 (async () => {
