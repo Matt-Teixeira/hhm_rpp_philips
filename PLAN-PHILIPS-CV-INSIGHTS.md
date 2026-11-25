@@ -5,7 +5,7 @@ recommendation in every §3 question (Q1–Q11) as written. Evidence was read-on
 no code, no commit, and no write to prod, Redis, `/home/prod` or the collector folders. Evidence:
 `~/philips_cv_evidence/` (README is the index).
 
-**Next:** CV-1b (§7): parser built (`fb3d510`, `49d016b`; review closed §7.9). Collector committed (`43888d9`); its Codex review found 2 P2 + 1 P3, all fixed and closed (§7.12); next: deploy (§7.11, day 1 = collector). CV-2a (the
+**Next:** CV-1b (§7): parser built (`fb3d510`, `49d016b`; review closed §7.9). Collector: review closed (§7.12); day 1 pulled and **rolled back** on 2026-11-25 before its first run (§7.13); the 30-day sweep window is fixed, next: re-promote and pull again. CV-2a (the
 code mapping, read-only) can run in parallel once you say so.
 
 **In one paragraph:** the parser stores what it reads faithfully. On every sampled file, row counts
@@ -588,7 +588,7 @@ counterexample, and a further round would only confirm them (feedback: no confir
 - On copies of 4 real zips: `EventLog.txe` is byte-identical to `unzip -p`, with the same files and
   no temp left (`cv1b/15_collector_unzip_real.txt`).
 
-**What the first deployed run does:** it unzips the **123** pending old zips on polled systems once
+**What the first deployed run does** (**superseded by §7.13: this count was wrong**): it unzips the **123** pending old zips on polled systems once
 (41 MB compressed, 868 MB uncompressed; 1.1 TB free). They are all behind the parser's pointers, so
 the live parser ignores them; the backfill reads them. Only 1 of the 45 backfill folders is on a
 system that isn't polled (SME11925). It needs a one-off unzip with the same script (§7.11).
@@ -600,9 +600,9 @@ then deploy (C1: collector first, parser a day later, then the backfill).
 
 | Step | Where | What | My check afterwards |
 |---|---|---|---|
-| **Day 1: collector** | your machine, then the server | promote `hhm_data_acquisition` `DEV` → `STAGING` → `PROD`; then `sudo -u prod git -C /home/prod/hhm_data_acquisition pull` | after the next :00/:30 run: the 123 pending folders have `EventLog.txe`; no `.unzip_tmp.*` left; no new unzip errors; regular-run time still under the next :10 |
+| **Day 1: collector** | your machine, then the server | **before you pull: I run the sweep's own selection read-only on the prod disk and report the count and size (§7.13).** Then promote `hhm_data_acquisition` `DEV` → `STAGING` → `PROD`; then `sudo -u prod git -C /home/prod/hhm_data_acquisition pull` | after the next :00/:30 run: the pending folders inside the 30-day window (6 on 2026-11-25) have `EventLog.txe`, and the 2,551 older ones are untouched; no `.unzip_tmp.*` left; no new unzip errors; regular-run time still under the next :10 |
 | **Day 2: parser** | the server | if it's December: `log.philips_cv_eventlog_2026_12` exists. Promote `hhm_rpp_philips` `DEV` → `STAGING` → `PROD`; then `sudo -u prod git -C /home/prod/hhm_rpp_philips pull`. No `.env` or cron change | after the next :18/:48 run: rows per system as before; no `NO MATCH FOUND`; no errors; the pointers move. Then 5 clean days (§7.5 step 7) |
-| **Backfill** (after day 2) | the server, in `/home/prod/hhm_rpp_philips` | 1. the one unpolled folder: `sudo -u prod /home/prod/hhm_data_acquisition/read/sh/Philips/parse_event_zip.sh /home/prod/hhm_data_acquisition/files/SME11925/<folder>`. 2. `sudo -u prod env DRY_RUN=1 node tooling/cv_backfill.js <list.tsv>` (I prepare the list then, from the live pointers). 3. `--apply` on **one** folder (the lock-and-transaction path has never run, §7.9). 4. `--apply` on the rest | **before 3 (§7.12):** each folder's window from the `DRY_RUN` output overlaps both neighbouring loaded exports (a cut historic zip would leave a gap; such a folder is held back). After 3 and 4: rows = the reader's record count per folder; the gaps in `sql/08_gaps.sql` closed; nothing in the alert window. The 2026-05 folders are refused if that partition is detached by then (§7.8 item 6) |
+| **Backfill** (after day 2) | the server, in `/home/prod/hhm_rpp_philips` | 1. unzip every listed folder that has no `EventLog.txe` yet (the sweep only covers folders fetched in the last 30 days, §7.13; 39 of the 45 today): `sudo -u prod /home/prod/hhm_data_acquisition/read/sh/Philips/parse_event_zip.sh /home/prod/hhm_data_acquisition/files/<SME>/<folder>` per folder (I give the exact list). 2. `sudo -u prod env DRY_RUN=1 node tooling/cv_backfill.js <list.tsv>` (I prepare the list then, from the live pointers). 3. `--apply` on **one** folder (the lock-and-transaction path has never run, §7.9). 4. `--apply` on the rest | **before 3 (§7.12):** each folder's window from the `DRY_RUN` output overlaps both neighbouring loaded exports (a cut historic zip would leave a gap; such a folder is held back). After 3 and 4: rows = the reader's record count per folder; the gaps in `sql/08_gaps.sql` closed; nothing in the alert window. The 2026-05 folders are refused if that partition is detached by then (§7.8 item 6) |
 
 ### 7.12 Codex review CV1B-COLLECTOR (2026-11-25): two P2 and one P3, all fixed
 
@@ -626,3 +626,34 @@ the 4 real zips, `EventLog.txe` is byte-identical to `unzip -p`. A real 3-file z
 three files, identical to `unzip -p`, with no temp left.
 
 **Review CLOSED 2026-11-25 (your decision):** no finding is open, and each fix is shown on the review's own counterexample.
+
+### 7.13 Day 1 stopped before its first run: the sweep would have unzipped 2,557 old zips (2026-11-25)
+
+**What happened:**
+1. You pulled `1c71e97` on prod at 15:34:45 UTC.
+2. My pre-run baseline then found **2,557** pending zips on the 39 polled systems, not the 123 I had
+   predicted. I had counted 2026 folders only, but the sweep has no date limit. That is 797 MB
+   compressed and **13.4 GB uncompressed**: 2,436 from 2024–2025 (data no parser or backfill reads)
+   and **21 unreadable**, which the sweep would retry and log every run, about 1,000 errors a day.
+3. **You rolled prod back** to `aa68ceb` at about 15:38, before the 16:00 run. I checked from the
+   refs: prod is on `aa68ceb`; no temp folders. **No run executed the new code**, so nothing was
+   unzipped.
+4. The remote `PROD` branch stayed at `1c71e97` (no force push), so prod must not pull until the fix
+   is promoted.
+
+**Fix (`hhm_data_acquisition`, `util/tools/phil_cv_unzip_sweep.js`):** the sweep takes only folders
+whose **daily folder mtime** (the local fetch time) is within **30 days**. It does not use the date in
+the folder's name: a system back after weeks offline has old-named folders fetched today, and those
+must still be unzipped. **The pre-pull check (§7.11 day 1), run with the module itself on the prod
+disk at about 15:50 UTC:** it selects **6** pending zips, **18 MB** uncompressed, 0 unreadable
+(SME00445 ×2, SME00446 ×2, SME02531, SME11677; `~/philips_cv_evidence/out/51_sweep_selection_prepull.json`).
+All 6 are on the backfill list. A shell estimate with whole-day ages had said 8; the two SME18532
+folders are just over 30 days old. The other
+backfill folders are unzipped explicitly in the backfill step (§7.11, step 1).
+
+**Tests:** 75 of 75 (the window: a 400-day and a 31-day folder out, exactly 30 days in, an old name
+fetched today in; the scan skips an old pending folder; the runner never touches a 2025 folder). The
+window and scan tests fail on `1c71e97`.
+
+**Lesson:** size a first run on the real disk with the code's own selection rule, before the pull,
+not after. That check is now in the day-1 row of §7.11.
