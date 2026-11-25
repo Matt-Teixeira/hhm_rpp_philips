@@ -7,7 +7,6 @@ const {
 
 // Node utils
 const fs = require("node:fs");
-const readline = require("readline");
 
 // App utils
 const { philips_re } = require("../../../parse/parsers");
@@ -24,6 +23,8 @@ const {
 const generateDateTime = require("../../../processing/date_processing/generateDateTimes");
 const { gzip_n_save } = require("../../../util");
 const { dt_now } = require("../../../util/dates");
+// CV-1b (plan §7.2): read as Latin-1, separator restored, PHI masked before matching
+const { read_lines, parse_line } = require("./decode");
 
 // Logger
 const [addLogEvent] = require("../../../utils/logger/log");
@@ -133,17 +134,8 @@ async function phil_cv_lod_eventlog(
       complete_file_path
     );
 
-    // rl is set conditionaly. Holds file data
-    let rl;
-    // prevFileSize will be null if it is new system (first time running rpp).
-    // prevFileSize will be 0 if log has rotated.
-    // In both scenarios, read and parse entire file.
-    if (prevFileSize === null || prevFileSize === 0 || delta !== 0) {
-      rl = readline.createInterface({
-        input: fs.createReadStream(complete_file_path),
-        crlfDelay: Infinity
-      });
-    }
+    // The whole file is read whenever its size changed (delta !== 0, checked above): a new system
+    // (prevFileSize null), a rotated log (0) or a new on-demand export. Lines are decoded and masked.
 
     /*     Old condition prior to node data acquisition app
     if (prevFileSize > 0 && prevFileSize !== null) {
@@ -168,9 +160,9 @@ async function phil_cv_lod_eventlog(
     } 
     */
 
-    for await (const line of rl) {
-      let matches = line.match(philips_re.cv[parsers[0]]);
-      if (matches === null) {
+    for await (const line of read_lines(complete_file_path)) {
+      const groups = parse_line(line, philips_re.cv[parsers[0]]);
+      if (groups === null) {
         const isNewLine = blankLineTest(line);
         if (isNewLine) {
           continue;
@@ -192,14 +184,14 @@ async function phil_cv_lod_eventlog(
           );
         }
       } else {
-        matches.groups.system_id = sme;
+        groups.system_id = sme;
 
         const dtObject = await generateDateTime(
           job_id,
-          matches.groups.system_id,
+          groups.system_id,
           file_config.pg_tables[0],
-          matches.groups.host_date,
-          matches.groups.host_time,
+          groups.host_date,
+          groups.host_time,
           sysConfigData.time_zone_id
         );
 
@@ -208,7 +200,7 @@ async function phil_cv_lod_eventlog(
             job_id,
             sme: sme,
             line,
-            match_group: matches.groups,
+            match_group: groups,
             message: "datetime object null"
           };
           await addLogEvent(
@@ -221,17 +213,17 @@ async function phil_cv_lod_eventlog(
           );
         }
 
-        matches.groups.capture_datetime = capture_datetime;
-        matches.groups.host_datetime = dtObject;
+        groups.capture_datetime = capture_datetime;
+        groups.host_datetime = dtObject;
 
-        matches.groups.lod = true;
+        groups.lod = true;
 
-        data.push(matches.groups);
-        if (matches.groups.memo !== "") {
+        data.push(groups);
+        if (groups.memo !== "") {
           memo_data.push({
-            system_id: matches.groups.system_id,
-            memo: matches.groups.memo,
-            host_datetime: matches.groups.host_datetime
+            system_id: groups.system_id,
+            memo: groups.memo,
+            host_datetime: groups.host_datetime
           });
         }
       }

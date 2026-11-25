@@ -5,8 +5,8 @@ recommendation in every §3 question (Q1–Q11) as written. Evidence was read-on
 no code, no commit, and no write to prod, Redis, `/home/prod` or the collector folders. Evidence:
 `~/philips_cv_evidence/` (README is the index).
 
-**Next:** CV-1b (the parser fix, this repo) and the collector session (Q3), with CV-2a (the code
-mapping, read-only) in parallel. Each starts with its own detailed plan and your go-ahead.
+**Next:** CV-1b (§7): C1–C4 AGREED; steps 1–4 built and verified on `DEV` (§7.8); Codex review next. CV-2a (the
+code mapping, read-only) can run in parallel once you say so.
 
 **In one paragraph:** the parser stores what it reads faithfully. On every sampled file, row counts
 and every field match an independent reader, with two small exceptions (I1, I2). The real losses
@@ -97,7 +97,7 @@ SME01394 lod) and 1 `eventlog_2` file (SME14784), **152,141 DB rows in total**.
 
 | # | Finding | Size | Where it's fixed |
 |---|---|---|---|
-| **I1** | **`eventlog_2` drops records.** It has no "message" branch, so short records fail. It requires digits in `SubsystemNumber`, but Image Detector (embedded) events write a binary byte there (`SubsystemNumber: \x05`). A stray empty field after `Memo` also fails | 72 of 4,916 records (1.5%) on SME14784, the only `eventlog_2` system. 57 of them are Image Detector events | parser |
+| **I1** | **`eventlog_2` drops records.** It has no "message" branch, so short records fail. It requires digits in `SubsystemNumber`, but Image Detector (embedded) events write a binary byte there (`SubsystemNumber: \x05`). Three more were a `0x83` byte in `Memo`, read as a second separator (an I2 case; first described here as "a stray empty field", corrected 2026-11-25) | 72 of 4,916 records (1.5%) on SME14784, the only `eventlog_2` system. 57 of them are Image Detector events | parser |
 | **I2** | **Non-UTF-8 bytes become `�`.** Besides the separator, the files contain `0xA0` (non-breaking space), `0x83`, and accented letters. In `message` that only garbles text. Inside `Memo` it **cuts the memo and loses `subsystem_number` and `thread_name`**. Inside `Description` it would push the whole record into the message branch (not seen in the samples) | 18,341 rows in 30 days hold `�` (0.4%); structural loss on 2 rows in the SME18533 sample | parser |
 | **I3** | **Exports that never reach the DB.** When one collector run fetches two or more daily folders and stops before its unzip loop, only the newest folder is unzipped later. The next run re-checks only `last_aquired_dir`. Example: SME00445 `daily_2026_11_11`, fetched at 12:42 on 11-12 in the same run as 11_12; that run logged 25 grabs, 0 unzips and no error. The parser then moves its Redis pointer (`<SME>.last_parsed_phil_cv_daily`) past folders that have no `EventLog.txe` and never comes back | **158** such folders in 2026 (129 with an intact zip, 32 empty, 1 truncated). **35 gaps, 146 system-days** in the last 120 days. **45 zips since 2026-05-01 hold 589,064 records that can be recovered** | collector + parser (+ backfill, Q4) |
 | **I4** | **Duplicates by design.** (a) **LOD re-copies daily rows**: 2,167 of 2,168 SME01394 lod records are also in its daily files, and the whole lod file is re-parsed whenever its size changes (104,937 lod rows in 120 days). (b) **Boundary overlap**: ~75–340 records per export are stored twice. (c) **Double exports by the device**: SME20610's 11-03 zip holds the same 10-09 → 11-03 window twice (222,399 + 222,440 records). 16 captures re-cover more than a day of the previous one, 12 of them on SME14784 | a few % overall; up to 2× on single days | insight extract (Q5) |
@@ -346,3 +346,179 @@ push, in any repo.
 `~/philips_cv_evidence/README.md` maps each section above to its script and output. The scripts are
 read-only: `q.js` refuses a non-read-only session, and prod files were only listed, tested or
 copied.
+
+---
+
+## 7. CV-1b: ingest integrity (planned 2026-11-25, read-only so far)
+
+Scope as agreed in Q2–Q4: the parser fix (this repo), the collector fix (a separate session in
+`hhm_data_acquisition`), and the backfill of the 45 zips. **Nothing is built yet.** The build
+starts on your go-ahead (§7.7).
+
+### 7.1 What the CV-1b evidence added
+
+- **The root cause of I3 is the tunnel-reset path.** `jobs/tunnel_reset/philips/philips_cv.js`
+  fetches daily zips and moves the `last_phil_cv_daily` key forward, but **never unzips**. The next
+  regular run unzips only `last_aquired_dir`, the newest folder. So when one tunnel reset fetches
+  two or more folders, all but the newest stay zipped, and the parser then moves past them.
+  Example: SME00445 on 11-12, tunnel reset at 12:40 fetched `daily_2026_11_11` and `_12`; at 13:00
+  only `_12` was unzipped.
+- **Regular collector runs can't overlap the parser.** 671 runs in 14 days started at :00/:30 and
+  took 42 s (max 50 s), long before :18/:48 (`out/33_collector_timing.tsv`). The atomic unzip (Q3)
+  is still worth doing, as cheap insurance.
+- **The alert models can't be affected by the decode change.** All 9,138 are `contains` on
+  `description`, with 3 ASCII phrases: `Grid smallest focus is defect`, `Gigalink lock dropped`,
+  `Geometry movements partly available`. "Gigalink" is an Image Detector event, and those are the
+  events `eventlog_2` drops today (I1). So **the fix restores those alerts on SME14784.**
+- **PHI, exactly** (120 days, counts only, `out/32_set_values.tsv`). These commands log the typed
+  value after `Execute()`:
+
+  | Command | Rows with a value | Systems |
+  |---|---|---|
+  | `SetPatientDateOfBirth` / `SetPatientID` / `SetGender` | 146 / 140 / 141 | 31 / 31 / 27 |
+  | `SetPatientType` / `Height` / `Weight` | 164 / 100 / 102 | 18 / 12 / 11 |
+  | `SetStudyID` / `SetExaminationID` | 140 / 140 | 19 / 1 |
+  | `SetOperatorName` / `SetAttendingPhysician` | 146 / 150 | 10 / 33 |
+  | `SetLongReportText` (free text) | 10 | 2 |
+  | `SetPatientName` | **0** (never carries a value) | 33 |
+
+  `SetProcedure`, `SetAcquisitionProcedure` and `SetRunLocalizedProcedureName` carry procedure
+  names. They aren't identifying, and the procedure mix needs them.
+- **No empty or tiny `EventLog.txe`** in any 2026 daily folder, so a "don't move past a missing
+  file" rule can't stall on empty files.
+- **Prototype** (`~/philips_cv_evidence/cv1b/proto.js`, evidence only), compared with the
+  independent reader:
+
+  | File | Lines | Unparsed now → new | Rows that change | Masked |
+  |---|---|---|---|---|
+  | SME01393 daily, SME20610 daily, SME01394 lod | 118,735 | 0 → 0 | **0** | 0 |
+  | SME18533 daily / lod | 28,562 / 3,956 | 0 → 0 | 2 / 2 (the `0xA0` memos, now whole) | 0 / 1 |
+  | SME14784 daily (`eventlog_2`) | 4,916 | **72 → 0** | all fields equal the reference | 45 |
+
+  Apart from the masked memo values, every field of every row equals the reference.
+
+### 7.2 The parser change (this repo)
+
+| File | Change |
+|---|---|
+| `jobs/Philips/CV/decode.js` (new, pure) | `decode_line(latin1_text)`: replaces `á` (byte `0xE1`) with `�`, so **the existing regexes and stored separators stay exactly as today**, and every other byte keeps its real character (I2). `mask_phi(line)`: replaces the value after `Execute()` with `<masked>` for the 12 commands in §7.1 (any `SetPatient*`, plus `SetGender`, `SetStudyID`, `SetExaminationID`, `SetOperatorName`, `SetAttendingPhysician`, `SetLongReportText`). It runs on the line **before** matching, so the DB, the metadata extract and the run-log notes (`first_row`, `NO MATCH FOUND`) never see the value. Empty values are left alone. `plan_folders(listing, pointer, has_txe, folder_age_h)`: the pointer rule below, as a pure function |
+| `parse/parsers.js` | `eventlog_2` gets the same shape as `eventlog`: a `message` branch, an optional tail, and `SubsystemNumber: (\d+)?` followed by any text (the `\x05` case). The three "stray field" records were a `0x83` byte in `Memo`, which the Latin-1 decode already fixes. `eventlog` is unchanged |
+| `jobs/Philips/CV/eventlog.js` | Streams with `encoding: 'latin1'` (still line by line, which matters for the 258 MB exports) through `decode_line` and `mask_phi`. **Pointer rule:** folders are parsed in order. At a folder without `EventLog.txe`, the run stops for that system and the pointer stays put, unless the folder is more than 48 h old (folder mtime): then it logs a warning `no EventLog.txe after 48 h, skipped` and moves on. A DB error also stops the run for that system, so no later folder moves the pointer past a failed one. A file with 0 records is logged and moved past |
+| `jobs/Philips/CV/lod_eventlog.js` | the same decode and mask; nothing else (Q5) |
+| `jobs/Philips/CV/__tests__/` (new) | `node --test`, with masked hand-built fixtures (`SME00001…`, no IPs, serials or names) for: `0xE1` / `0xA0` / `0x83` / `\x05`; the `eventlog_2` shapes (`\x05`, empty `SubsystemNumber`, `0x83` in `Memo`, short records); each masked command (including a value that holds `�` or has no `[UI_DEVICE_NAME]` after it), an empty value, and a procedure name left alone; `plan_folders` (missing folder < 48 h blocks, > 48 h skips, an error blocks, a new system starts at its newest folder) |
+
+- **Latin-1, not Windows-1252.** Latin-1 is lossless and needs no ICU. It only renders bytes
+  `0x80`–`0x9F` differently (3 bytes in the samples).
+- **What new `log.*` rows look like:** the same as today, except that real characters replace `�`
+  inside text, `eventlog_2` rows that were dropped now arrive, and the 12 commands' values read
+  `<masked>`.
+- **Not changed:** lod handling, duplicates (Q5), `saved_files` (48 h retention; it keeps the raw
+  file), the offline upsert, and the metadata extract.
+
+### 7.3 The collector change (separate session, `hhm_data_acquisition`, as agreed in Q3)
+
+1. **Sweep:** at the end of each regular CV run, unzip **every** `daily_*` folder that has an
+   `Event.zip` and no `EventLog.txe`. This covers the tunnel-reset path with no change to it. It
+   also unzips the 129 old zips once. That's harmless: they sit before the parser's pointer, so
+   they are only read by the explicit backfill (§7.4).
+2. **Atomic unzip:** `parse_event_zip.sh` extracts to a temporary folder next to the target, then
+   `mv`s `EventLog.txe` into place last.
+3. **Visible failures:** log an error when `list_new_phil_cv_files` returns `null` (18 systems are
+   silent today).
+4. **Check on the devices:** see whether `SaveDevData` still holds the 33 folders that can't be
+   recovered (32 empty, 1 truncated). Re-fetch them only if it does (§7.6 C4).
+
+### 7.4 The backfill (Q4)
+
+- **A one-off tool,** `tooling/cv_backfill.js`. Its input is the list of 45 folders
+  (`out/23_recoverable_zips.tsv`, since 2026-05-01). For each folder it parses `EventLog.txe` with
+  the §7.2 code and inserts the rows with **`capture_datetime` = the folder's mtime** (its fetch
+  time).
+- **No Redis, `saved_files`, offline upsert or metadata writes.**
+- **Idempotent:** it refuses a folder when rows with that `(system_id, capture_datetime)` already
+  exist.
+- Every timestamp is days old, so no row lands in the alert processor's 30-minute window. All of
+  them fall in existing partitions (2026-05 … 2026-11).
+- **`DRY_RUN` first:** the recorded INSERT rows per folder must equal the independent reader's
+  record count. Then you run it on prod.
+
+### 7.5 Build order and checkpoints
+
+1. The pure layer (`decode.js`, the `eventlog_2` regex) and its tests.
+2. Wire it into `eventlog.js` and `lod_eventlog.js`.
+3. **Oracle:** the new parse of every file in `~/philips_cv_evidence/src/` equals the independent
+   reader (rows and fields), apart from masked values. Then a local `DRY_RUN` rehearsal:
+   `DEV_ENV=prod DRY_RUN=1 ONLY_SME=SME01393,SME14784,SME18533 npm run philips_cv`, with the
+   recorded INSERTs checked against the reader.
+4. The backfill tool and its `DRY_RUN` rehearsal.
+5. Codex review (`REVIEW-CV1B-HANDOFF.md` → `REVIEW-CV1B-CODEX.md`), closed once findings converge.
+6. Commit (your OK), the collector session (§7.3), then deploy: **collector first** (it closes most
+   of I3 on its own), the parser a day later, then the backfill.
+7. Exit (§4): 5 clean days. That means no new gap in `sql/08_gaps.sql`, no `NO MATCH FOUND`, no
+   errors, every new folder parsed within one run of being unzipped, and the 45 backfilled gaps
+   closed.
+
+### 7.6 Questions for CV-1b — AGREED 2026-11-25 (the recommendation in each)
+
+- **C1. Deploy order. AGREED (recommended): collector first, then the parser a day later.** The sweep alone
+  stops new I3 losses. The parser's pointer rule is a second line of defence, and shipping them
+  apart keeps each change easy to read in the logs.
+- **C2. The mask list. AGREED (recommended): the 12 commands in §7.1** (corrected from "14" on 2026-11-25: the list was always these 12). That is Q6's pattern plus
+  `SetStudyID`, `SetExaminationID`, `SetGender`, `SetAttendingPhysician` and `SetLongReportText`,
+  which the data shows carry identifying values. Procedure names are kept.
+- **C3. How long a missing `EventLog.txe` blocks the pointer. AGREED (recommended): 48 h, then skip with a
+  warning.** Once the sweep is in place, a `.txe` appears within 30 minutes of its zip, so 48 h only
+  catches real failures. Anything skipped stays recoverable with the backfill tool.
+- **C4. The 33 folders that can't be recovered. AGREED (recommended): the collector session checks
+  whether the devices still hold them, and re-fetches only if they do.** No new code if they're
+  gone; the gaps stay marked "no data" (§2 item 5).
+
+### 7.7 Your go-ahead
+
+Agree C1–C4, and I build steps 1–4 on `DEV` (uncommitted), then bring you the oracle, the rehearsal
+results and the review handoff.
+
+### 7.8 Build status: steps 1–4 done (2026-11-25, on `DEV`)
+
+| File | What |
+|---|---|
+| `jobs/Philips/CV/decode.js` (new) | `decode_line`, `mask_phi`, `prepare_line`, `parse_line`, `read_lines` (streams as Latin-1) |
+| `jobs/Philips/CV/folders.js` (new) | `folder_key`, `folders_to_parse`, `folder_action` (`WAIT_HOURS` = 48) |
+| `jobs/Philips/CV/eventlog.js` | the decode and mask; the folder rules; stop on error; a file with no records moves on; `isLast` by position |
+| `jobs/Philips/CV/lod_eventlog.js` | the decode and mask only |
+| `parse/parsers.js` | `eventlog_2` as §7.2 (`eventlog` unchanged) |
+| `tooling/cv_backfill.js` (new) | the §7.4 tool: `DRY_RUN`, `--apply`, `--root` for rehearsals |
+| `util/dry_run.js` | the recorded-SQL file is named after `basename(argv[2])`, so a tool given a file path can record. Job names give the same file names as before |
+| `jobs/Philips/CV/__tests__/` (new) | `decode.test.js` (9), `folders.test.js` (6), `eventlog_loop.test.js` (5: the real `eventlog.js` on temp folders, with the DB, Redis and logger stubbed) |
+
+**Evidence** (`~/philips_cv_evidence/cv1b/`, README there):
+
+| Check | Result |
+|---|---|
+| `node --test jobs/` | 10 of 10 files pass (3 CV, 7 CT) |
+| Do the tests catch the old bugs? | the loop tests run against the **old** `eventlog.js`: 4 of 5 fail (wait, skip, stop on error, date order and saving). The fifth, a new system, is unchanged by design |
+| Oracle: the repo's line pipeline on all 16 copied files vs the independent reader (strict) | **771,620 rows**, 0 dropped, 0 unparsed. The only differences: `�` as the separator inside `message` (as stored today) and the masked values (45 on SME14784, 1 on SME18533) (`02_oracle.txt`, `03_oracle_strict.txt`) |
+| `DRY_RUN` of `PHILIPS_CV` (`DEV_ENV=prod DRY_RUN=1 ONLY_SME=SME01393,SME14784,SME18533`) | 79,768 recorded rows = the files' record counts, and equal to the oracle **field by field** (0 differences; `technical_event_id` is compared as a number, since the job sends `'060009920'`). No NULL `host_datetime` (`05_dry_run_vs_oracle.txt`) |
+| PHI in the recorded SQL (41 MB, run-log notes included) | 106 PHI-command occurrences: 46 masked, 60 empty, **0 unmasked** |
+| Backfill `DRY_RUN`, the real list of 45 folders | all 45 refused: "no EventLog.txe". That's correct until the collector sweep ships (`06_backfill_dry_45.txt`) |
+| Backfill `DRY_RUN`, a scratch root (`unzip -p` from the prod zips, `cp -p`) | 3 missing exports: **29,449 rows** = the reader = the oracle (0 field differences), `capture_datetime` = the zip's export time, `lod` NULL; 1.5–2.2% already in the window (the normal boundary overlap). The control, SME01393 11-18 (already loaded), was refused: 22,751 rows already in its window (`07`–`09`) |
+
+**Changes from §7.2–§7.4 made during the build** (for the review):
+1. **No stray-field clause in `eventlog_2`.** The three "stray field" records were a `0x83` byte in
+   `Memo`, which the Latin-1 decode already fixes. I1 in §1.3 is corrected.
+2. **Backfill `capture_datetime` = the `Event.zip` mtime, not the folder mtime.** Unzipping
+   `EventLog.txe` into a folder moves the folder's mtime to "now", which could put rows in the alert
+   window. `lftp` keeps the zip's mtime, the device's export time. The tool also refuses any capture
+   less than 24 h old.
+3. **A skipped folder moves the pointer to itself,** so it isn't warned about every 30 minutes. A
+   file with no records also moves on, with a warning. (No empty file exists today: §7.1.)
+4. **Folders are compared by their date digits.** A pointer folder that no longer exists used to
+   make the job re-read all history; now it reads only later folders.
+5. **The mask list is 12 commands, not 14** (C2; the count was wrong, the list was not).
+6. **The 2026-05 partition:** the archive job detaches "today − 6 months", so `2026_05` is likely
+   detached before the backfill runs. The 14 May folders (of 45) would then fail cleanly: one
+   transaction per folder, reported as refused. They stay in `archive_log`'s range, and that's
+   acceptable under Q11.
+
+**Next:** Codex review (`REVIEW-CV1B-HANDOFF.md` → `REVIEW-CV1B-CODEX.md`), then the collector
+session (§7.3), then deploy in the C1 order: collector, parser a day later, backfill.

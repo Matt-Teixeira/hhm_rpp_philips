@@ -1,7 +1,7 @@
 const db = require("../../../utils/db/pg-pool");
 const pgp = require("pg-promise")();
 const fs = require("node:fs");
-const readline = require("readline");
+const path = require("node:path");
 const { philips_re } = require("../../../parse/parsers");
 const mapDataToSchema = require("../../../persist/map-data-to-schema");
 const { philips_cv_eventlog_schema } = require("../../../persist/pg-schemas");
@@ -16,6 +16,8 @@ const extract = require("../../../processing/date_processing/phil_cv/extract_mem
 const { dt_now } = require("../../../util/dates");
 const { build_upsert_str } = require("../../../util");
 const { gzip_n_save } = require("../../../util");
+const { read_lines, parse_line } = require("./decode");
+const { folders_to_parse, folder_action, WAIT_HOURS } = require("./folders");
 const [addLogEvent] = require("../../../utils/logger/log");
 const {
   type: { I, W, E },
@@ -26,6 +28,9 @@ const {
   pg_column_sets: pg_cs
 } = require("../../../utils/db/sql/pg-helpers_hhm");
 
+// CV-1b (PLAN-PHILIPS-CV-INSIGHTS.md §7.2): the file is read as Latin-1 and PHI is masked
+// (decode.js); folders are taken in date order and the pointer never moves past a folder that has
+// no EventLog.txe yet, or one that failed (folders.js).
 async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
   const capture_datetime = dt_now();
   const sme = sysConfigData.id;
@@ -44,56 +49,30 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
 
   let previous_daily_file = await get_last_parsed_daily(sysConfigData.id); // Some Redis Ref
 
-  const unfiltered_dirs_arr = dir_list.split(" ");
+  const files_to_parse = folders_to_parse(dir_list.split(" "), previous_daily_file);
 
-  const daily_re = /daily_\d{4}_\d{2}_\d{2}|daily_\d{4}\d{2}\d{2}/;
-
-  const filtered_dirs_arr = [];
-  for (let dir of unfiltered_dirs_arr) {
-    const matching_file = daily_re.test(dir);
-    if (matching_file) {
-      dir = dir.trim();
-      filtered_dirs_arr.push(dir);
+  // RETURN FROM RPP FUNCTION IF THERE ARE NO NEW daily DIRECTORIES
+  if (!files_to_parse.length) {
+    if (!dir_list.split(" ").some((d) => /daily_/.test(d))) {
+      let note = {
+        id: sme,
+        message: "THERE ARE NO DAILY DIRECTORIES ON DEBIAN FOR THIS SYSTEM"
+      };
+      await addLogEvent(I, run_log, "phil_cv_eventlog", war, note, null);
     }
-  }
-
-  // RETURN FROM RPP FUNCTION IF THERE ARE NO daily DIRECTORIES
-  if (!filtered_dirs_arr.length) {
-    let note = {
-      id: sme,
-      message: "THERE ARE NO DAILY DIRECTORIES ON DEBIAN FOR THIS SYSTEM"
-    };
-    await addLogEvent(I, run_log, "phil_cv_eventlog", war, note, null);
     return null;
   }
 
-  let files_to_parse = [];
-  // if !previous_daily_file BLOCK WILL RUN IF NO REFERENCE TO A DAILY DIRECTORY IN REDIS: NEW SYSTEM STATE
-  if (!previous_daily_file) {
-    files_to_parse.push(filtered_dirs_arr[filtered_dirs_arr.length - 1].trim());
-  }
-  // IF REDIS REFERENC: BUILD ARRAY OF DIRECORIES THAT NEED TO BE ACCESSED AND PARSED. COULD BE A SINGLE NEW DIR OR MORE THAN ONE
-  else {
-    for (let i = filtered_dirs_arr.length - 1; i >= 0; i--) {
-      if (previous_daily_file === filtered_dirs_arr[i]) {
-        break;
-      } else {
-        files_to_parse.unshift(filtered_dirs_arr[i]);
-      }
-    }
-  }
-
-  // TRACK LAST DIR/INDEX TO THEN SAVE THE LAST FILE IN log.saved_files
-  let index = 0;
-
-  for await (let file of files_to_parse) {
+  for (let i = 0; i < files_to_parse.length; i++) {
+    const file = files_to_parse[i];
     // data ARRAY HOLDS ALL PARSED DATA TO INSERT INTO TABLE
     const data = [];
     // memo_data: HOLDS EXTRACTED 'Power-On hours' and 'Commercial Version' DATA TO INSERT INTO logfile_event_history_metadata TABLE
     const memo_data = [];
-    // isLast: SET TO true IF LAST ITER OF ARRAY OF DIRECTORIES
-    let isLast = index === files_to_parse.length - 1;
+    // isLast: THE NEWEST FOLDER OF THIS RUN (ITS FILE IS SAVED TO log.saved_files)
+    const isLast = i === files_to_parse.length - 1;
 
+    const folder_path = path.join(sysConfigData.debian_server_path, file);
     const complete_file_path = `${sysConfigData.debian_server_path}/${file}/${file_config.file_name}`;
 
     let note = {
@@ -106,29 +85,32 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
     try {
       await addLogEvent(I, run_log, "phil_cv_eventlog", cal, note, null);
 
-      // ENSURE FILE EXISTS
+      // NO EventLog.txe YET: WAIT (STOP, POINTER STAYS) OR, AFTER WAIT_HOURS, SKIP WITH A WARNING
       if (!fs.existsSync(complete_file_path)) {
+        const age_hours = (Date.now() - fs.statSync(folder_path).mtimeMs) / 3600000;
+        const action = folder_action({ has_txe: false, age_hours });
         let note = {
           job_id,
           id: sme,
+          dir: file,
           file: file_config.file_name,
-          path: complete_file_path,
-          message: "File not found"
+          age_hours: Math.round(age_hours * 10) / 10
         };
+        if (action === "wait") {
+          note.message = "No EventLog.txe yet: stop, the pointer stays";
+          await addLogEvent(I, run_log, "phil_cv_eventlog", det, note, null);
+          break;
+        }
+        note.message = `No EventLog.txe after ${WAIT_HOURS} h: skipped (recoverable with tooling/cv_backfill.js)`;
         await addLogEvent(W, run_log, "phil_cv_eventlog", war, note, null);
+        await update_last_parsed_daily(sme, file);
         continue;
       }
 
-      // CREATE READLINE INTERFACE TO PROCESS A FILE LINE-BY-LINE: PREVENTS LOADING FILE ENTIRELY INTO MEMORY
-      let rl;
-      rl = readline.createInterface({
-        input: fs.createReadStream(complete_file_path),
-        crlfDelay: Infinity
-      });
-
-      for await (const line of rl) {
-        let matches = line.match(philips_re.cv[parsers[0]]);
-        if (matches === null) {
+      // READ LINE BY LINE AS LATIN-1 (NOT LOADED ENTIRELY INTO MEMORY); LINES ARE DECODED AND MASKED
+      for await (const line of read_lines(complete_file_path)) {
+        let groups = parse_line(line, philips_re.cv[parsers[0]]);
+        if (groups === null) {
           const isNewLine = blankLineTest(line);
           if (isNewLine) {
             continue;
@@ -143,14 +125,14 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
             await addLogEvent(W, run_log, "phil_cv_eventlog", det, note, null);
           }
         } else {
-          matches.groups.system_id = sme;
+          groups.system_id = sme;
 
           const dtObject = await generateDateTime(
             job_id,
-            matches.groups.system_id,
+            groups.system_id,
             file_config.pg_tables[0],
-            matches.groups.host_date,
-            matches.groups.host_time,
+            groups.host_date,
+            groups.host_time,
             sysConfigData.time_zone_id
           );
 
@@ -160,24 +142,32 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
               job_id,
               id: sme,
               line,
-              match_group: matches.groups,
+              match_group: groups,
               message: "datetime object null"
             };
             await addLogEvent(W, run_log, "phil_cv_eventlog", det, note, null);
           }
 
-          matches.groups.capture_datetime = capture_datetime;
-          matches.groups.host_datetime = dtObject;
+          groups.capture_datetime = capture_datetime;
+          groups.host_datetime = dtObject;
 
-          data.push(matches.groups);
-          if (matches.groups.memo !== "") {
+          data.push(groups);
+          if (groups.memo !== undefined && groups.memo !== "") {
             memo_data.push({
-              system_id: matches.groups.system_id,
-              memo: matches.groups.memo,
-              host_datetime: matches.groups.host_datetime
+              system_id: groups.system_id,
+              memo: groups.memo,
+              host_datetime: groups.host_datetime
             });
           }
         }
+      }
+
+      // A FILE WITH NO RECORDS: NOTHING TO INSERT; MOVE ON
+      if (!data.length) {
+        note.message = "No records in file";
+        await addLogEvent(W, run_log, "phil_cv_eventlog", war, note, null);
+        await update_last_parsed_daily(sme, file);
+        continue;
       }
 
       // HOMOGENIZE DATA TO PREP FOR INSERT TO DB
@@ -209,7 +199,7 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
       // INSERT METADATA
       if (memo_data.length > 0) await extract(job_id, memo_data, run_log);
 
-      // UPDATE: alert.offline_hhm_conn TABLE WITH HOST_DATETIME
+      // UPDATE: alert.offline_hhm_conn TABLE WITH HOST_DATETIME (THE FILE IS NEWEST FIRST)
       const resent_host_datetime = mappedData[0].host_datetime;
 
       const upsert_str = build_upsert_str(sme, resent_host_datetime);
@@ -227,11 +217,11 @@ async function phil_cv_eventlog(job_id, sysConfigData, file_config, run_log) {
           complete_file_path
         );
       }
-
-      index++;
     } catch (error) {
+      // STOP THIS SYSTEM'S RUN: NO LATER FOLDER MAY MOVE THE POINTER PAST A FAILED ONE
       console.log(error);
       await addLogEvent(E, run_log, "phil_cv_eventlog", cat, note, error);
+      break;
     }
   }
 }

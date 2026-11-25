@@ -44,7 +44,7 @@ function out(line) {
   if (!outFile) {
     const dir = path.join(process.cwd(), "dry_run_output");
     fs.mkdirSync(dir, { recursive: true });
-    const job = process.argv[2] || "job";
+    const job = path.basename(process.argv[2] || "job").replace(/[^\w.-]/g, "_"); // a job name, or a tool's file argument
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     outFile = path.join(dir, `${job}.${ts}.sql`);
   }
