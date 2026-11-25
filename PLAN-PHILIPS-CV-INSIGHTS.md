@@ -5,7 +5,7 @@ recommendation in every §3 question (Q1–Q11) as written. Evidence was read-on
 no code, no commit, and no write to prod, Redis, `/home/prod` or the collector folders. Evidence:
 `~/philips_cv_evidence/` (README is the index).
 
-**Next:** CV-1b (§7): parser built (`fb3d510`, `49d016b`; review closed §7.9). Collector: review closed (§7.12); day 1 pulled and **rolled back** on 2026-11-25 before its first run (§7.13); the 30-day sweep window is fixed, next: re-promote and pull again. CV-2a (the
+**Next:** CV-1b (§7): parser built (`fb3d510`, `49d016b`; review closed §7.9). Collector: review closed (§7.12); day 1 pulled and **rolled back** on 2026-11-25 before its first run (§7.13); the 30-day window (`60e91aa`) is promoted (`DEV` = `STAGING` = `PROD`); next: you pull on prod, then my day-1 check (§7.11). CV-2a (the
 code mapping, read-only) can run in parallel once you say so.
 
 **In one paragraph:** the parser stores what it reads faithfully. On every sampled file, row counts
@@ -638,8 +638,9 @@ three files, identical to `unzip -p`, with no temp left.
 3. **You rolled prod back** to `aa68ceb` at about 15:38, before the 16:00 run. I checked from the
    refs: prod is on `aa68ceb`; no temp folders. **No run executed the new code**, so nothing was
    unzipped.
-4. The remote `PROD` branch stayed at `1c71e97` (no force push), so prod must not pull until the fix
-   is promoted.
+4. The remote `PROD` branch stayed at `1c71e97` (no force push) until the fix was promoted:
+   `60e91aa` is now on `DEV`, `STAGING` and `PROD` (fast-forwards), so a prod pull takes the windowed
+   sweep.
 
 **Fix (`hhm_data_acquisition`, `util/tools/phil_cv_unzip_sweep.js`):** the sweep takes only folders
 whose **daily folder mtime** (the local fetch time) is within **30 days**. It does not use the date in
