@@ -271,9 +271,14 @@ You accepted every recommendation below as written on 2026-11-25. Each answer is
    **AGREED (recommended):**
    - the insight layer never stores memo text, patient or exam IDs (§2 item 7);
    - mask new rows at parse time (Q2);
-   - **raise the existing rows with whoever owns data privacy.** That covers `log.philips_cv_eventlog`
-     since 2026-05, `archive_log` and the files on disk. Whether and how to purge history is their
-     call, not this plan's;
+   - ~~raise the existing rows with whoever owns data privacy~~ **Decided by you, 2026-11-25:
+     nothing is deleted.** Existing rows in `log.philips_cv_eventlog`, `archive_log` and the files on
+     disk stay as they are. **Rule: no report, page, alert or export may show that data.** In
+     practice: reports read only `api.*` views (never `log.*`), and nothing that reaches a reader
+     carries `Memo` text, patient or exam IDs, or operator/physician names. Checked on 2026-11-25:
+     `sme_reports` reads only `api.*`, `public.*`, `config.*` and `alert.models`; alert emails
+     carry the system, the time and the alert name, no log text; the 3 CV alert phrases are hardware
+     events. Not checked here: the avanteconnected.com system page (not in this workspace);
    - delete `~/philips_cv_evidence/src/` once the CV-1b fixtures are masked.
 
 7. **Where the code lives, and the migration number.**
