@@ -172,7 +172,7 @@ async function attempt({ conn, spool, entry, sme, kind, timeZoneId, fileName }) 
     Object.assign(state, {
       status: "committing", capture, t0, pid, ids, eal_ids: kind === "eal" ? ids : [],
       matched_old: matched.matchedOld, matched_new: matched.matchedNew, bad_lines: prepared.bad.length,
-      format_change: prepared.formatChange,
+      bad_reasons: prepared.bad.slice(0, 1000), format_change: prepared.formatChange,
     });
     spool.writeState(entry.dir, state);
     committingWritten = true;
@@ -193,7 +193,9 @@ async function attempt({ conn, spool, entry, sme, kind, timeZoneId, fileName }) 
     } catch (_) {
       /* the connection may be gone; COMMIT was never sent, so nothing committed */
     }
-    if (e instanceof Deadline) return { outcome: "deadline", prepared, detail: e.message };
+    // Our own deadline: thrown by deadlineCheck/the guard, or a statement the server cancelled at
+    // the statement_timeout we set from the time left (SQLSTATE 57014).
+    if (e instanceof Deadline || (e && e.code === "57014")) return { outcome: "deadline", prepared, detail: String(e.message) };
     return { outcome: "aborted", prepared, detail: String(e && e.message), error: e };
   }
 }
@@ -219,6 +221,8 @@ async function resolveUnknown({ conn, state, sme, kind, fileName }) {
       const diag = await conn.oneOrNone("SELECT state, xact_start::text, wait_event_type, wait_event FROM pg_stat_activity WHERE pid = $1", [state.pid]).catch(() => null);
       return { outcome: "unknown", reason: `barrier: ${e.message}`, diagnostics: diag };
     }
+    // Fence the archive job (review finding 4): a plain DETACH waits for this ACCESS SHARE lock.
+    await conn.none("LOCK TABLE log.philips_ct_eal_events IN ACCESS SHARE MODE");
     // Fresh statements from here (Read Committed): each takes a new snapshot after the wait.
     const { now } = await conn.one("SELECT clock_timestamp()::text AS now");
     if (cov.parseTs(now) - cov.parseTs(state.t0) >= HORIZON_US) {

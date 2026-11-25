@@ -154,6 +154,7 @@ class Spool {
     if (this.io.exists(data)) this.io.unlink(data);
     this.io.fsyncDir(dir);
     if (this.io.exists(st)) this.io.unlink(st);
+    // Only temp files can remain here (finish() removed a resolved restamp.json first).
     for (const n of this.io.readdir(dir)) if (n.includes(".tmp-")) this.io.unlink(path.join(dir, n));
     if (this.io.exists(dir)) this.io.rmdir(dir);
     this.io.fsyncDir(path.dirname(dir));
@@ -213,6 +214,16 @@ class Spool {
    * @returns {Promise<"late"|"complete">}
    */
   async finish(dir, state, hooks) {
+    // A repair's intent file (review finding 3): resolved (its operation is recorded in the state)
+    // -> removed; unresolved -> the entry is held, never completed over it.
+    const opFile = path.join(dir, "restamp.json");
+    if (this.io.exists(opFile)) {
+      const op = JSON.parse(this.io.readFile(opFile).toString("utf8"));
+      const recorded = (state.restamps || []).some((r) => r.op_id === op.op_id);
+      if (!recorded) return "held";
+      this.io.unlink(opFile);
+      this.io.fsyncDir(dir);
+    }
     if ((state.bad_lines > 0 || state.format_change) && !state.retained) {
       state.retained = this.retain(dir, state.file, this.readBytes(dir), { reasons: state.bad_reasons || [], format_change: state.format_change || null });
       this.writeState(dir, state);
@@ -263,37 +274,37 @@ class Spool {
 }
 
 /**
- * Take the system's lock without waiting: `flock -n` in a child that holds it while this process
- * lives (its stdin is our pipe; when we exit or release, it exits and the lock goes).
- * @returns {Promise<{release: () => Promise<void>} | null>} null when busy
+ * Take a flock on `lockFile`, held by a file descriptor THIS process owns (review finding 5).
+ * `flock(1)` locks the descriptor we pass it as fd 3 and exits; flock locks belong to the open file
+ * description, so the lock stays held exactly as long as this process keeps the fd open: released
+ * by release(), or by the kernel when this process exits or crashes. No helper process can die
+ * and silently drop it. Compatible with the collector's `exec 9>file; flock -n 9`.
+ * @param {string} lockFile
+ * @param {number|null} waitS  null: don't wait (-n); else wait up to waitS seconds (-w)
+ * @returns {Promise<{release: () => Promise<void>} | null>} null when busy (or the wait timed out)
  */
-function lockSystem(sysDir) {
-  fs.mkdirSync(sysDir, { recursive: true });
-  const lockFile = path.join(sysDir, ".lock");
+function flockFile(lockFile, waitS = null) {
+  const fd = fs.openSync(lockFile, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
+  const args = waitS === null ? ["-n", "-E", "75", "3"] : ["-w", String(waitS), "-E", "75", "3"];
   return new Promise((resolve, reject) => {
-    const child = spawn("flock", ["-n", "-E", "75", lockFile, "-c", "echo locked; exec cat >/dev/null"], { stdio: ["pipe", "pipe", "inherit"] });
-    let settled = false;
+    const child = spawn("flock", args, { stdio: ["ignore", "ignore", "inherit", fd] });
     child.on("error", (e) => {
-      if (!settled) {
-        settled = true;
-        reject(e);
-      }
-    });
-    child.stdout.on("data", (d) => {
-      if (!settled && d.toString().includes("locked")) {
-        settled = true;
-        const exited = new Promise((r) => child.on("exit", r));
-        resolve({
-          release: async () => {
-            child.stdin.end();
-            await exited;
-          },
-        });
-      }
+      fs.closeSync(fd);
+      reject(e);
     });
     child.on("exit", (code) => {
-      if (!settled) {
-        settled = true;
+      if (code === 0) {
+        let released = false;
+        resolve({
+          release: async () => {
+            if (!released) {
+              released = true;
+              fs.closeSync(fd);
+            }
+          },
+        });
+      } else {
+        fs.closeSync(fd);
         if (code === 75) resolve(null);
         else reject(new Error(`flock exited ${code}`));
       }
@@ -301,4 +312,10 @@ function lockSystem(sysDir) {
   });
 }
 
-module.exports = { Spool, lockSystem, realIo, sha256, utcStamp, APP_ROOT };
+/** The system's spool lock, without waiting. @returns {Promise<{release}|null>} null when busy */
+function lockSystem(sysDir) {
+  fs.mkdirSync(sysDir, { recursive: true });
+  return flockFile(path.join(sysDir, ".lock"), null);
+}
+
+module.exports = { Spool, lockSystem, flockFile, realIo, sha256, utcStamp, APP_ROOT };

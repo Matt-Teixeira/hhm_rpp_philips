@@ -5,6 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { Spool, lockSystem, realIo, sha256 } = require("../spool");
+const { spawnSync } = require("child_process");
 
 const MUTATING = ["mkdirp", "writeTemp", "rename", "fsyncDir", "unlink", "rmdir"];
 const kindOf = (file) => (file.startsWith("EALInfo") ? "eal" : file.startsWith("Events") ? "events" : null);
@@ -176,4 +177,38 @@ test("lock: one holder per system; released on release", async () => {
   const b = await lockSystem(dir);
   assert.ok(b);
   await b.release();
+});
+
+test("lock: held by this process's own fd, with no helper left to die (review finding 5)", async () => {
+  const dir = path.join(tmpRoot(), "spool/philips_ct/SME00001");
+  const a = await lockSystem(dir);
+  assert.ok(a);
+  // No long-lived helper: an outside flock on the same file fails while we hold it ...
+  const busy = spawnSync("flock", ["-n", path.join(dir, ".lock"), "-c", "true"]);
+  assert.strictEqual(busy.status, 1);
+  // ... and still fails a moment later (nothing to kill, nothing that exits).
+  await new Promise((r) => setTimeout(r, 200));
+  assert.strictEqual(spawnSync("flock", ["-n", path.join(dir, ".lock"), "-c", "true"]).status, 1);
+  await a.release();
+  assert.strictEqual(spawnSync("flock", ["-n", path.join(dir, ".lock"), "-c", "true"]).status, 0);
+});
+
+test("completion with a repair intent: resolved -> removed and completed; unresolved -> held (review finding 3)", async () => {
+  for (const recorded of [true, false]) {
+    const root = tmpRoot();
+    const sp = new Spool({ sme: "SME00001", root, now: fixedNow });
+    const { dir } = sp.spoolSnapshot("EALInfo.csv", BUF, "eal");
+    const st = committedState(sp, dir, { restamps: recorded ? [{ op_id: "op-1" }] : [] });
+    fs.writeFileSync(path.join(dir, "restamp.json"), JSON.stringify({ op_id: "op-1", status: "committing" }));
+    const r = await sp.finish(dir, st, { setDone: async () => {}, setSeen: async () => {} });
+    if (recorded) {
+      assert.strictEqual(r, "complete");
+      assert.deepStrictEqual(sp.entries(), []);
+    } else {
+      assert.strictEqual(r, "held");
+      assert.ok(fs.existsSync(path.join(dir, "restamp.json")));
+      assert.ok(fs.existsSync(path.join(dir, "state.json")));
+      assert.ok(fs.existsSync(path.join(dir, "data")));
+    }
+  }
 });

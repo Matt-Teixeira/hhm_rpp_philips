@@ -31,21 +31,33 @@ function candidateMonths(captureText) {
   return out;
 }
 
+/** The archive tables that could hold the capture, and the parent's attached partitions. */
+async function catalogState(conn, capture) {
+  const archives = [];
+  for (const m of candidateMonths(capture)) {
+    const t = await conn.oneOrNone("SELECT format('%I.%I', n.nspname, c.relname) AS t FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'archive_log' AND c.relname = $1 AND c.relkind IN ('r', 'p')", [`philips_ct_eal_events_${m}`]);
+    if (t) archives.push(t.t);
+  }
+  const attached = (await conn.any("SELECT c.oid::regclass::text AS p, i.inhdetachpending AS pending FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE i.inhparent = 'log.philips_ct_eal_events'::regclass ORDER BY 1")).map((r) => `${r.p}${r.pending ? " (detach pending)" : ""}`);
+  return { archives, attached };
+}
+
 /** @returns {{outcome, detail}} */
 async function checkOutcome(conn, state, sme, fileName) {
   await conn.none("BEGIN");
   try {
     await conn.none("SET LOCAL lock_timeout = '10min'");
     await conn.one("SELECT pg_advisory_xact_lock(hashtext($1))", [lockKey(sme, state.kind)]);
+    // Fence the archive job (review finding 4): its plain DETACH PARTITION needs ACCESS EXCLUSIVE on
+    // the parent, so it waits while this transaction holds ACCESS SHARE. Taken BEFORE the catalog
+    // is listed, and held through the reads; inserts (ROW EXCLUSIVE) are not blocked.
+    await conn.none("LOCK TABLE log.philips_ct_eal_events IN ACCESS SHARE MODE");
     const { now } = await conn.one("SELECT clock_timestamp()::text AS now");
     const receipt = await receiptExists(conn, sme, fileName, state.capture);
     const ids = state.ids || [];
     if (ids.length === 0) return { outcome: receipt ? "committed" : "aborted", detail: { ids: 0, receipt, now } };
-    const tables = ["log.philips_ct_eal_events"];
-    for (const m of candidateMonths(state.capture)) {
-      const t = await conn.oneOrNone("SELECT format('%I.%I', n.nspname, c.relname) AS t FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'archive_log' AND c.relname = $1 AND c.relkind IN ('r', 'p')", [`philips_ct_eal_events_${m}`]);
-      if (t) tables.push(t.t);
-    }
+    const catalogBefore = await catalogState(conn, state.capture);
+    const tables = ["log.philips_ct_eal_events", ...catalogBefore.archives];
     const found = new Set();
     const searched = [];
     for (const t of tables) {
@@ -53,6 +65,10 @@ async function checkOutcome(conn, state, sme, fileName) {
       for (const r of rows) found.add(r.id);
       searched.push({ table: t, found: rows.length });
     }
+    // Belt and braces (a DETACH ... CONCURRENTLY isn't fenced by ACCESS SHARE): the catalog must be
+    // unchanged after the reads, else the answer is incomplete.
+    const catalogAfter = await catalogState(conn, state.capture);
+    if (JSON.stringify(catalogAfter) !== JSON.stringify(catalogBefore)) return { outcome: "unknown", detail: { reason: "the partitions changed during the check", before: catalogBefore, after: catalogAfter } };
     const detail = { ids: ids.length, found: found.size, receipt, searched, now };
     if (found.size === ids.length) return { outcome: "committed", detail };
     if (found.size === 0 && !receipt) return { outcome: "aborted", detail };
@@ -103,4 +119,4 @@ async function main() {
 
 if (require.main === module) main().catch((e) => (console.error(e.message), process.exit(1)));
 
-module.exports = { checkOutcome, candidateMonths };
+module.exports = { checkOutcome, candidateMonths, catalogState };

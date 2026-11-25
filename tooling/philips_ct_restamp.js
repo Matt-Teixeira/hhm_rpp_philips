@@ -126,7 +126,9 @@ async function main() {
 /** 4. Record a committed operation in the entry's state; remove restamp.json last. */
 function record(spool, entry, state, op, t1, opFile) {
   const classification = cov.classify(cov.parseTs(op.new), cov.parseTs(t1));
-  const restamps = [...(state.restamps || []), { op_id: op.op_id, old: op.old, new: op.new, t1, classification }];
+  // Idempotent (review finding 3): an operation already recorded is not appended again.
+  const already = (state.restamps || []).some((r) => r.op_id === op.op_id);
+  const restamps = already ? state.restamps : [...(state.restamps || []), { op_id: op.op_id, old: op.old, new: op.new, t1, classification }];
   const next = { ...state, capture: op.new, t1, classification, restamps, status: classification === "late" ? "late" : "committed" };
   spool.writeState(entry.dir, next);
   fs.unlinkSync(opFile);

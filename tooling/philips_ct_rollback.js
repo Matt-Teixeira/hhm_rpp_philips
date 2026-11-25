@@ -20,8 +20,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
-const { Spool, sha256, APP_ROOT, utcStamp } = require("../jobs/Philips/CT/spool");
+const { Spool, sha256, APP_ROOT, utcStamp, flockFile } = require("../jobs/Philips/CT/spool");
 const { reproduces, rawFromMdb, rawFromCsv } = require("./lib/philips_ct_legacy_export");
 
 const PUBLISHED = ["Logger.mdb", "EALInfo.output", "Events.output", "EALInfo.csv", "Events.csv"];
@@ -30,22 +29,9 @@ const OUTPUTS = [
   { output: "Events.output", csv: "Events.csv", kind: "events" },
 ];
 
-/** The collector's lock, waiting up to `waitS` seconds. */
+/** The collector's lock (<dir>/.grab.lock), waiting up to `waitS` seconds; held by our own fd. */
 function collectorLock(dir, waitS) {
-  const lockFile = path.join(dir, ".grab.lock");
-  return new Promise((resolve, reject) => {
-    const child = spawn("flock", ["-w", String(waitS), "-E", "75", lockFile, "-c", "echo locked; exec cat >/dev/null"], { stdio: ["pipe", "pipe", "inherit"] });
-    let settled = false;
-    child.on("error", (e) => !settled && ((settled = true), reject(e)));
-    child.stdout.on("data", (d) => {
-      if (!settled && d.toString().includes("locked")) {
-        settled = true;
-        const exited = new Promise((r) => child.on("exit", r));
-        resolve({ release: async () => (child.stdin.end(), await exited) });
-      }
-    });
-    child.on("exit", (code) => !settled && ((settled = true), code === 75 ? resolve(null) : reject(new Error(`flock exited ${code}`))));
-  });
+  return flockFile(path.join(dir, ".grab.lock"), waitS);
 }
 
 function writeDurable(file, buf) {

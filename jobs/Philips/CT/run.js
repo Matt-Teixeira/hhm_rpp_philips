@@ -34,6 +34,25 @@ async function redisGetJson(key) {
     await c.quit();
   }
 }
+
+const REDIS_TIMEOUT_MS = 5000;
+function withTimeout(p, ms, what) {
+  let t;
+  return Promise.race([p, new Promise((_, rej) => (t = setTimeout(() => rej(new Error(`${what}: timed out after ${ms} ms`)), ms)))]).finally(() => clearTimeout(t));
+}
+
+/**
+ * The cache never gates preservation (review finding 1): a failed, slow or malformed read is a
+ * cache miss (WARN), so the snapshot is still spooled and diffed (rule P makes that safe).
+ */
+async function cacheGet(key, run_log, note) {
+  try {
+    return await withTimeout(redisGetJson(key), REDIS_TIMEOUT_MS, `redis GET ${key}`);
+  } catch (e) {
+    await log(W, run_log, "philips_ct_cache", det, { ...note, key, message: `cache read failed, treated as a miss: ${e && e.message}` });
+    return null;
+  }
+}
 async function redisSetJson(key, value) {
   const c = await initRedis();
   try {
@@ -59,9 +78,7 @@ class MemorySpool {
   }
 }
 
-async function log(level, run_log, func, tag, note, err = null) {
-  await addLogEvent(level, run_log, func, tag, note, err);
-}
+const log = require("./log").makeLog(addLogEvent, E);
 
 // ---------- the clock check (Q41) ----------
 async function clockSample(conn, spool) {
@@ -86,10 +103,20 @@ function saveClock(spool, sample, committedSince) {
 
 // ---------- completion (Q47): spool.finish with the Redis writes ----------
 async function complete(spool, entry, state, run_log, note) {
-  const r = await spool.finish(entry.dir, state, {
-    setDone: (st) => redisSetJson(doneKey(st.sme, st.file), { size: st.size, sha256: st.sha256 }),
-    setSeen: (st) => redisSetJson(seenKey(st.sme, st.file), { sha256: st.sha256 }),
-  });
+  let r;
+  try {
+    r = await spool.finish(entry.dir, state, {
+      setDone: (st) => withTimeout(redisSetJson(doneKey(st.sme, st.file), { size: st.size, sha256: st.sha256 }), REDIS_TIMEOUT_MS, "redis SET"),
+      setSeen: (st) => withTimeout(redisSetJson(seenKey(st.sme, st.file), { sha256: st.sha256 }), REDIS_TIMEOUT_MS, "redis SET"),
+    });
+  } catch (e) {
+    // The entry keeps its state; the next run finishes it (every step is idempotent).
+    await log(W, run_log, "philips_ct_complete", det, { ...note, entry: entry.name, message: `completion deferred to the next run: ${e && e.message}` });
+    return "deferred";
+  }
+  if (r === "held") {
+    await log(E, run_log, "philips_ct_complete", det, { ...note, entry: entry.name, message: "an unresolved repair intent (restamp.json): run tooling/philips_ct_restamp.js for this entry" });
+  }
   if (r === "late") {
     await log(E, run_log, "philips_ct_late", det, { ...note, entry: entry.name, capture: state.capture, t1: state.t1, eal_ids: state.eal_ids.length, repair: "tooling/philips_ct_restamp.js" });
   }
@@ -122,9 +149,9 @@ async function runSystem(job_id, sys, run_log) {
       const buf = fs.readFileSync(p);
       const hash = sha256(buf);
       const pendingForFile = spool.entries().some((e) => e.file === f.file_name && (!e.state || e.state.status !== "complete"));
-      const done = await redisGetJson(doneKey(sme, f.file_name));
+      const done = await cacheGet(doneKey(sme, f.file_name), run_log, note);
       if (done && done.sha256 === hash && !pendingForFile) continue;
-      const seen = await redisGetJson(seenKey(sme, f.file_name));
+      const seen = await cacheGet(seenKey(sme, f.file_name), run_log, note);
       if (seen && seen.sha256 === hash) {
         await log(E, run_log, "philips_ct_run", det, { ...note, file: f.file_name, message: "format change: this snapshot is retained; fix or replay (retained/)" });
         continue;
@@ -234,7 +261,8 @@ async function runSystem(job_id, sys, run_log) {
       const st = { status: "spooled", sme, file: m.file, kind: m.kind, sha256: m.hash, size: m.buf.length };
       const r = await ingest.attempt({ conn, spool: ms, entry: { dir: null, file: m.file, state: st }, sme, kind: m.kind, timeZoneId: sys.time_zone_id, fileName: m.file });
       if (r.outcome === "committed" && r.prepared.bad.length === 0 && r.state.classification !== "late") {
-        await redisSetJson(doneKey(sme, m.file), { size: m.buf.length, sha256: m.hash });
+        await withTimeout(redisSetJson(doneKey(sme, m.file), { size: m.buf.length, sha256: m.hash }), REDIS_TIMEOUT_MS, "redis SET").catch((e) =>
+          log(W, run_log, "philips_ct_run", det, { ...note, file: m.file, message: `done-hash not set (${e.message}); the next run diffs again` }));
       } else {
         await log(E, run_log, "philips_ct_run", det, { ...note, file: m.file, outcome: r.outcome, message: "unspooled snapshot not completed; its bytes are in log.saved_files only if it committed" });
       }
@@ -282,10 +310,12 @@ async function dryRunSystem(job_id, sys, run_log) {
     }
     await saveInTx(db, sme, f.file_name, buf, capture);
     await redisSetJson(doneKey(sme, f.file_name), { size: buf.length, sha256: sha256(buf) });
-    await log(I, run_log, "philips_ct_dry_run", det, {
+    const summary = {
       ...note, file: f.file_name, rows: rows.length, bad: prepared.bad.length, format_change: prepared.formatChange,
       would_insert: insert.length, ms: Date.now() - started, phase_now: cov.inPhase(cov.parseTs(capture)), zone_error: prepared.zoneError,
-    });
+    };
+    console.log(`PHILIPS_CT DRY_RUN ${JSON.stringify(summary)}`);
+    await log(I, run_log, "philips_ct_dry_run", det, summary);
   }
 }
 
@@ -346,7 +376,22 @@ async function replay(folderArg, run_log) {
   await log(I, run_log, "philips_ct_replay", det, { sme, folder, inputs: inputs.map((x) => ({ file: x.file, source: x.source, size: x.buf.length })) });
   await runSystem("replay", sys, run_log);
   const left = spool.entries().filter((e) => e.state && hashes.includes(e.state.sha256));
-  if (left.length === 0) {
+  // Completed is not the same as accepted (review finding 7): look at the audit copies.
+  const rejected = [];
+  const doneRoot = path.join(APP_ROOT, "done", "philips_ct", sme);
+  for (const month of fs.existsSync(doneRoot) ? fs.readdirSync(doneRoot) : []) {
+    for (const f of fs.readdirSync(path.join(doneRoot, month))) {
+      try {
+        const a = JSON.parse(fs.readFileSync(path.join(doneRoot, month, f), "utf8"));
+        if (hashes.includes(a.sha256) && (a.format_change || a.bad_lines > 0)) rejected.push({ file: a.file, format_change: a.format_change, bad_lines: a.bad_lines });
+      } catch (_) {
+        /* an unreadable audit copy decides nothing */
+      }
+    }
+  }
+  if (left.length === 0 && rejected.length > 0) {
+    await log(E, run_log, "philips_ct_replay", det, { sme, folder, message: "replayed, but input was still rejected; the folder stays in retained/", rejected });
+  } else if (left.length === 0) {
     const dest = path.join(APP_ROOT, "replayed", "philips_ct", sme, path.basename(folder));
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.renameSync(folder, dest);
@@ -356,7 +401,18 @@ async function replay(folderArg, run_log) {
   }
 }
 
-const philips_ct_parsers = async (job_id, sysConfigData, run_log) => {
+/**
+ * Dev only (1b.3): with DEV_ENV=dev AND PHILIPS_CT_DEV_CSV=1, read EALInfo.csv / Events.csv in place
+ * of the configured `.output` names, so a dry run can read .csv copies before config.log changes.
+ */
+function devCsvNames(sys) {
+  if (process.env.DEV_ENV !== "dev" || process.env.PHILIPS_CT_DEV_CSV !== "1") return sys;
+  const map = { "EALInfo.output": "EALInfo.csv", "Events.output": "Events.csv" };
+  return { ...sys, log_config: (sys.log_config || []).map((f) => ({ ...f, file_name: map[f.file_name] || f.file_name })) };
+}
+
+const philips_ct_parsers = async (job_id, sysConfigDataIn, run_log) => {
+  const sysConfigData = devCsvNames(sysConfigDataIn);
   const note = { job_id, sme: sysConfigData.id };
   try {
     await log(I, run_log, "philips_ct_parsers", cal, note);
@@ -367,4 +423,4 @@ const philips_ct_parsers = async (job_id, sysConfigData, run_log) => {
   }
 };
 
-module.exports = { philips_ct_parsers, runSystem, dryRunSystem, complete, kindOfFile, MemorySpool, replay, replayInputs };
+module.exports = { philips_ct_parsers, devCsvNames, runSystem, dryRunSystem, complete, kindOfFile, MemorySpool, replay, replayInputs };
